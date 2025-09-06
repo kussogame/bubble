@@ -1,0 +1,30 @@
+{
+  "palette": [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
+    "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#aec7e8", "#ffbb78",
+    "#98df8a", "#ff9896", "#c5b0d5", "#c49c94", "#f7b6d2", "#c7c7c7"
+  ],
+  "avatars": [
+    { "id": "asou",      "file": "assets/avatars/asou.png",      "color": "#1f77b4" },
+    { "id": "isiba",       "file": "assets/avatars/isiba.png",       "color": "#ff7f0e" },
+    { "id": "iwaya",     "file": "assets/avatars/iwaya.png",     "color": "#2ca02c" },
+    { "id": "kishida", "file": "assets/avatars/kishida.png", "color": "#d62728" },
+    { "id": "yoneyama",    "file": "assets/avatars/yoneyama.png",    "color": "#9467bd" },
+
+    { "id": "kouno",    "file": "assets/avatars/kouno.png",    "color": "#8c564b" },
+    { "id": "nikai",    "file": "assets/avatars/nikai.png",    "color": "#e377c2" },
+    { "id": "renho",     "file": "assets/avatars/renho.png",     "color": "#7f7f7f" },
+    { "id": "noroi",     "file": "assets/avatars/noroi.png",     "color": "#bcbd22" },
+    { "id": "okabe",     "file": "assets/avatars/okabe.png",     "color": "#17becf" },
+
+    { "id": "renho",     "file": "assets/avatars/renho.png",     "color": "#aec7e8" },
+    { "id": "poo",  "file": "assets/avatars/poo.png",  "color": "#ffbb78" },
+    { "id": "shinjiro",  "file": "assets/avatars/shinjiro.png",  "color": "#98df8a" },
+    { "id": "takenaka",       "file": "assets/avatars/takenaka.png",       "color": "#ff9896" },
+    { "id": "yuriko",     "file": "assets/avatars/yuriko.png",     "color": "#c5b0d5" },
+
+    { "id": "hasimoto", "file": "assets/avatars/hasimoto.png", "color": "#c49c94" },
+    { "id": "murakami",    "file": "assets/avatars/murakami.png",    "color": "#f7b6d2" },
+    { "id": "gareso",      "file": "assets/avatars/gareso.png",      "color": "#c7c7c7" }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "id": "level_002",
+  "cols": 12,
+  "rows": [
+    "B B G G R R B B G G R R",
+    " B B G G R R B B G G R ",
+    "_ _ _ _ _ _ _ _ _ _ _ _",
+    "Y P Y P Y P Y P Y P Y P"
+  ],
+  "palette": {
+    "R": "#FF4D4D",
+    "G": "#7ED321",
+    "B": "#00AEEF",
+    "Y": "#FFD400",
+    "P": "#9B59B6"
+  }
+}
