@@ -57,7 +57,7 @@
 
   // ====== ステート ======
   let images = {};         // avatarId -> HTMLImageElement
-  let avatars = [];        // [{id,file,color, voice?:string[]}]
+  let avatars = [];        // [{id,file,color}]
   let palette = [];        // ["#..",...]
   let board = null;        // [row][col] -> {color, avatarId} | null
   let dropOffsetY = 0;     // 天井降下オフセット
@@ -102,37 +102,28 @@
   }
 
   async function loadAvatars(){
-    // 正しい読み方： { palette: [...], avatars: [...] }
-    const resp = await fetch("data/avatars.json");
-    const data = await resp.json();
-    palette = data.palette;
-    avatars = data.avatars;
-
-    // 画像ロード（a.file を使用）
-    const jobs = avatars.map(a =>
-      loadImageSmart(a.file).then(img => { images[a.id] = img; })
-    );
-    await Promise.allSettled(jobs);
-
-    // ボイス事前生成
+    const data = await (await fetch("./data/avatars.json")).json();
+    avatars = data;
+    const seen = new Set();
     for (const a of avatars){
+      const key = a.color.toLowerCase();
+      if (!seen.has(key)){ seen.add(key); palette.push(a.color); }
+    }
+    for (const a of avatars){
+      const img = new Image();
+      img.src = a.img;
+      await img.decode().catch(()=>{});
+      images[a.id] = img;
+
       if (Array.isArray(a.voice) && a.voice.length){
-        voiceEls[a.id] = a.voice.map(v => {
+        voiceEls[a.id] = [];
+        for (const v of a.voice){
           const el = new Audio(v);
           el.preload = "auto";
-          return el;
-        });
+          voiceEls[a.id].push(el);
+        }
       }
     }
-  }
-
-  function loadImageSmart(src){
-    return new Promise((resolve,reject)=>{
-      const img = new Image();
-      img.onload = ()=>resolve(img);
-      img.onerror = reject;
-      img.src = src;
-    });
   }
 
   async function loadLevel(){
@@ -178,64 +169,65 @@
     moving = null;
     nextBall = makeNextBall();
 
-    if (shotsLeftEl){
-      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
+    if (shotsLeftEl) shotsLeftEl.textContent = String(CONFIG.CEILING_DROP_PER_SHOTS);
+    draw();
+  }
+
+  // ====== 入力 ======
+  const isMobile = /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent);
+
+  function clampAngleDeg(a){
+    const min = CONFIG.MIN_AIM_ANGLE_DEG;
+    if (a > -min && a < min){
+      a = (a >= 0) ? min : -min;
     }
-    hideOverlay();
-    loop(0);
+    return a;
   }
 
-  // ====== 入力（PCマウス） ======
-  cv.addEventListener("mousemove", e=>{
-    const {x,y} = clientToCanvas(e.clientX, e.clientY);
-    if (!shooter) return; // 初期化前ガード
-    aim.x = clampAimX(x);
-    aim.y = Math.min(y, shooter.y - 12);
+  function handlePointerMove(x, y){
+    if (isMobile) y = CONFIG.AIM_Y_OFFSET_MOBILE;
+    const dx = x - shooter.x;
+    const dy = y - shooter.y;
+    let ang = Math.atan2(dy, dx) * 180 / Math.PI;
+    ang = clampAngleDeg(ang);
+    const rad = ang * Math.PI / 180;
+    aim.x = shooter.x + Math.cos(rad) * 240;
+    aim.y = shooter.y + Math.sin(rad) * 240;
+  }
+
+  cv.addEventListener("mousemove", (e)=>{
+    const rect = cv.getBoundingClientRect();
+    handlePointerMove(e.clientX - rect.left, e.clientY - rect.top);
   });
-  cv.addEventListener("click", ()=>{ if (state === "ready") fire(); });
-
-  // ====== 入力（モバイル） ======
-  cv.addEventListener("touchstart", e=>{
-    setAudioUnlocked();
-    if (state === "ready") fire();
-  }, {passive:true});
-  cv.addEventListener("touchmove", e=>{
-    const t = e.touches && e.touches[0];
+  cv.addEventListener("touchmove", (e)=>{
+    const t = e.touches[0];
     if (!t) return;
-    const {x,y} = clientToCanvas(t.clientX, t.clientY);
-    if (!shooter) return; // 初期化前ガード
-    aim.x = clampAimX(x);
-    aim.y = Math.min(y, shooter.y - 12);
+    const rect = cv.getBoundingClientRect();
+    handlePointerMove(t.clientX - rect.left, t.clientY - rect.top);
   }, {passive:true});
 
-  // ====== 画面座標→キャンバス座標 ======
-  function clientToCanvas(cx, cy){
-    const r = cv.getBoundingClientRect();
-    return { x: cx - r.left, y: cy - r.top };
+  function playShotSfx(){
+    try { shotEl && shotEl.play().catch(()=>{}); } catch {}
   }
-  function clampAimX(x){
-    const minX = CONFIG.LEFT_MARGIN + CONFIG.R;
-    const maxX = cv.width - CONFIG.RIGHT_MARGIN - CONFIG.R;
-    return Math.max(minX, Math.min(maxX, x));
+  function playHitSfx(){
+    try { hitEl && hitEl.play().catch(()=>{}); } catch {}
   }
-
-  function playShotSfx(){ try{ shotEl && shotEl.play().catch(()=>{});}catch{} }
-  function playHitSfx(){  try{ hitEl  && hitEl.play().catch(()=>{});}catch{} }
   function playClearVoice(id){
     const list = voiceEls[id];
     if (!list || !list.length) return;
     const el = list[Math.floor(Math.random()*list.length)];
-    try{ el.currentTime = 0; el.play().catch(()=>{});}catch{}
+    try { el.currentTime = 0; el.play().catch(()=>{}); } catch {}
   }
-  function playFireVoice(id){ playClearVoice(id); }
+  function playFireVoice(id){
+    playClearVoice(id);
+  }
 
-  // ====== 発射 ======
-  function fire(){
+  function shoot(){
     if (state !== "ready") return;
     if (!nextBall) return;
 
-    const dx = aim.x - (shooter?.x ?? cv.width/2);
-    const dy = aim.y - (shooter?.y ?? (cv.height - CONFIG.BOTTOM_MARGIN));
+    const dx = aim.x - shooter.x;
+    const dy = aim.y - shooter.y;
     const ang = Math.atan2(dy, dx);
     const vx = Math.cos(ang) * CONFIG.SHOT_SPEED;
     const vy = Math.sin(ang) * CONFIG.SHOT_SPEED;
@@ -257,7 +249,7 @@
     nextBall = makeNextBall();
   }
 
-  // ====== 配置 ======
+  // ====== 配置・消去 ======
   function placeAt(row,col,ball){
     if (!PXGrid.inBounds(board,row,col)) return false;
     if (row >= board.length) return false;
@@ -265,11 +257,14 @@
     return true;
   }
 
-  // ====== マッチ＆落下 ======
   function handleMatchesAndFalls(sr, sc){
     const cluster = PXGrid.findCluster(board, sr, sc);
     if (cluster.length >= CONFIG.CLEAR_MATCH){
-      // ---- ここから追加：gareso 隣接（1層）も消す ----
+      const hasGaresoInCluster = cluster.some(({r,c}) => {
+        const cell = board[r]?.[c];
+        return cell && cell.avatarId === "gareso";
+      });
+      const extraFromCluster = new Set();
       function neighborsRC(rr, cc){
         const odd = (rr & 1) === 1;
         const cand = [
@@ -279,11 +274,6 @@
         ];
         return cand.filter(p => PXGrid.inBounds(board, p.r, p.c));
       }
-      const hasGaresoInCluster = cluster.some(({r,c}) => {
-        const cell = board[r]?.[c];
-        return cell && cell.avatarId === "gareso";
-      });
-      const extraFromCluster = new Set();
       if (hasGaresoInCluster){
         const clusterSet = new Set(cluster.map(({r,c})=>`${r},${c}`));
         for (const {r,c} of cluster){
@@ -291,21 +281,19 @@
           if (!cell || cell.avatarId !== "gareso") continue;
           for (const nb of neighborsRC(r,c)){
             const k = `${nb.r},${nb.c}`;
-            if (clusterSet.has(k)) continue; // クラスタ本体と重複しない
+            if (clusterSet.has(k)) continue;
             const ncell = board[nb.r][nb.c];
             if (!ncell) continue;
             extraFromCluster.add(k);
           }
         }
       }
-      // ---- 既存：クラスタ本体の消去 ----
       for (const {r,c} of cluster){
         if (board[r][c]){
           if (audioUnlocked) playClearVoice(board[r][c].avatarId);
           board[r][c] = null;
         }
       }
-      // ---- 追加：gareso が含まれていた場合のみ、隣接1層を消去 ----
       if (hasGaresoInCluster){
         for (const key of extraFromCluster){
           const [rr, cc] = key.split(',').map(Number);
@@ -315,8 +303,6 @@
           board[rr][cc] = null;
         }
       }
-
-      // ---- 孤立塊の落下（既存）＋ gareso の隣接追加消去（落下由来）----
       const connected = PXGrid.findCeilingConnected(board);
       const toDrop = [];
       const toDropSet = new Set();
@@ -338,7 +324,7 @@
           if (!cell || cell.avatarId !== "gareso") continue;
           for (const nb of neighborsRC(r,c)){
             const k = `${nb.r},${nb.c}`;
-            if (toDropSet.has(k)) continue; // 同時落下は除外
+            if (toDropSet.has(k)) continue;
             const ncell = board[nb.r][nb.c];
             if (!ncell) continue;
             extraFromFalls.add(k);
@@ -373,7 +359,7 @@
     return true;
   }
 
-  // ====== 天井降下処理 ======
+  // ====== 天井降下 ======
   function dropCeilingIfNeeded(){
     const shotsPer = CONFIG.CEILING_DROP_PER_SHOTS;
     const remain = shotsPer - (shotsUsed % shotsPer);
@@ -463,19 +449,16 @@
       }
     }
 
-    render();
+    draw();
     requestAnimationFrame(loop);
   }
 
   // ====== 描画 ======
-  function render(){
-    if (!board) return; // 初期化前ガード
-
+  function draw(){
     ctx.clearRect(0,0,cv.width, cv.height);
     ctx.fillStyle = "#0b0b0b";
     ctx.fillRect(0,0,cv.width, cv.height);
 
-    // 盤面
     for (let r = 0; r < board.length; r++){
       for (let c = 0; c < CONFIG.COLS; c++){
         const cell = board[r][c];
@@ -485,11 +468,9 @@
       }
     }
 
-    // 砲台
     ctx.fillStyle = "#3dd5f3";
     ctx.fillRect(cv.width/2 - 18, cv.height - CONFIG.BOTTOM_MARGIN, 36, 8);
 
-    // 照準
     ctx.strokeStyle = "#3dd5f3";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -497,7 +478,6 @@
     ctx.lineTo(aim.x, aim.y);
     ctx.stroke();
 
-    // 現弾/次弾
     if (nextBall){
       drawBall(cv.width/2, cv.height - CONFIG.BOTTOM_MARGIN - 28, nextBall.avatarId);
       const nctx = cvNext.getContext("2d");
@@ -505,7 +485,6 @@
       drawBall(cvNext.width/2, cvNext.height/2, nextBall.avatarId, 48, nctx);
     }
 
-    // 天井ライン
     ctx.strokeStyle = "#30343a";
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -579,6 +558,10 @@
     if (shotsLeftEl) shotsLeftEl.textContent = String(CONFIG.CEILING_DROP_PER_SHOTS);
   }
 
+  // ====== 入力（発射） ======
+  cv.addEventListener("mousedown", ()=>{ shoot(); });
+  cv.addEventListener("touchstart", ()=>{ shoot(); }, {passive:true});
+
   // ====== START（オーディオ解禁） ======
   function playBGM(){
     if (!audioUnlocked || !bgmEl) return;
@@ -608,13 +591,17 @@
     });
   }
 
+  // STARTが押されるまで待つ
   btnStart.addEventListener("click", async ()=>{
-    setAudioUnlocked();
-    try { await audioCtx?.resume(); } catch {}
-    setBgmVolumeNorm(bgmVolume);
-    playBGM();
-    if (!board) await init(); else await reset();
+    if (!audioUnlocked) {
+      audioUnlocked = true;
+      ensureAudioGraph();
+      try { await audioCtx.resume(); } catch {}
+      setBgmVolumeNorm(bgmVolume);
+      playBGM();
+    }
     startOverlay.classList.add("hidden");
+    if (!board) await init(); else await reset();
   });
 
   // ====== ループ開始 ======
