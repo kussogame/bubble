@@ -1,638 +1,598 @@
-/* =========================================================================
- * bubble / game.js  (上書き用フルコード)
- * 目的: 画像アセットの一部404でもゲームが起動するように初期化を堅牢化
- * 外部I/Fは維持:  index.html 側からは init() / startGame() を同名で呼べます
- * ========================================================================= */
+// game.js - ランダム初期配置 + サウンド（BGM/ボイス/shot/hit）
+//         + STARTでオーディオ解禁 + モバイル操作 + BGM音量UI（Web Audio対応）
 
 (() => {
-  "use strict";
+  // ====== 基本設定 ======
+  const CONFIG = {
+    COLS: 12,
+    R: 18,
+    BOARD_ROWS: 18,
+    SHOT_SPEED: 640,
+    CEILING_DROP_PER_SHOTS: 8,   // N発ごとに1段降下
+    CLEAR_MATCH: 3,              // 同色3個以上で消去
+    LEFT_MARGIN: 24, RIGHT_MARGIN: 24, TOP_MARGIN: 24, BOTTOM_MARGIN: 96,
 
-  // ===== グローバル（最小限） =====
-  let canvas, ctx;
-  let W = 960, H = 540;       // 既定のキャンバス解像度（必要ならCSSで拡縮）
-  let rafId = null;
-  let lastTs = 0;
+    AIM_Y_OFFSET_MOBILE: 160,    // モバイルの狙いY固定オフセット
+    MIN_AIM_ANGLE_DEG: 7,        // 水平すぎを防ぐ最小射角（度）
 
-  // アセットとデータ構造
-  let palette = [];               // 色パレット（avatars.json）
-  let avatars = [];               // {id, file, color} の配列
-  const images = Object.create(null); // id -> HTMLImageElement
-  const sounds = Object.create(null); // name -> HTMLAudioElement
-
-  // ゲーム状態
-  const STATE = {
-    scene: "title",         // "title" | "playing" | "clear" | "gameover"
-    bubbles: [],            // プレイフィールド上の玉
-    shooter: null,          // 発射機
-    nextQueue: [],          // 次に出る候補
-    score: 0,
-    time: 0
+    INIT_ROWS: 6,                // 初期段数（難易度）
+    EMPTY_RATE: 0.1              // 空マス率（難易度）
   };
 
-  // 入力
-  const INPUT = {
-    pointerDown: false,
-    pointerX: 0,
-    pointerY: 0
-  };
+  // ====== DOM ======
+  const cv = document.getElementById("game");
+  const ctx = cv.getContext("2d");
+  const cvNext = document.getElementById("next");
+  const shotsLeftEl = document.getElementById("shotsLeft");
+  const overlay = document.getElementById("overlay");
+  const overlayText = document.getElementById("overlayText");
+  const btnPause = document.getElementById("btnPause");
+  const btnRetry = document.getElementById("btnRetry");
+  const btnResume = document.getElementById("btnResume");
+  const btnOverlayRetry = document.getElementById("btnOverlayRetry");
 
-  // ====== 初期化と起動 ======
-  async function init() {
-    // DOM取得
-    canvas = document.getElementById("game");
-    if (!canvas) {
-      // HTML側に <canvas id="game"> が無いと何も描けない
-      console.error("[game] <canvas id='game'> が見つかりません。HTMLを確認してください。");
-      return;
-    }
-    ctx = canvas.getContext("2d", { alpha: false });
-    resizeCanvas();
-
-    // 画像/音の読み込み
-    try {
-      await loadAllAssets();   // ← [CHANGED] 内部で allSettled を使って堅牢化
-    } catch (e) {
-      // ここに落ちることは基本ありません（allSettled化したため）
-      console.error("[game] アセット読み込みで致命的エラー:", e);
-    }
-
-    // ロジック初期化
-    setupInitialState();
-
-    // 入力イベント
-    bindInputs();
-
-    // タイトル表示状態で待機
-    STATE.scene = "title";
-    draw(0); // 初回描画
-    console.info("[game] init 完了");
+  // STARTオーバーレイ（無ければ生成）
+  let startOverlay = document.getElementById("startOverlay");
+  let btnStart = document.getElementById("btnStart");
+  if (!startOverlay) {
+    startOverlay = document.createElement("div");
+    startOverlay.id = "startOverlay";
+    startOverlay.className = "overlay";
+    startOverlay.innerHTML = `
+      <div class="overlay-text">Cryptoバブルボブル</div>
+      <div class="overlay-actions"><button id="btnStart" class="btn">START</button></div>`;
+    const stage = document.querySelector(".stage") || document.body;
+    stage.appendChild(startOverlay);
+    btnStart = startOverlay.querySelector("#btnStart");
   }
 
-  function startGame() {
-    if (STATE.scene !== "title" && STATE.scene !== "gameover" && STATE.scene !== "clear") {
-      return; // すでにプレイ中
-    }
-    STATE.scene = "playing";
-    STATE.score = 0;
-    STATE.time = 0;
-    STATE.bubbles.length = 0;
-    setupShooter();
-    setupStage();
-
-    // ループ開始
-    cancelAnim();
-    lastTs = performance.now();
-    const loop = (ts) => {
-      const dt = Math.min(33, ts - lastTs);
-      lastTs = ts;
-      update(dt);
-      draw(dt);
-      rafId = requestAnimationFrame(loop);
-    };
-    rafId = requestAnimationFrame(loop);
-    console.info("[game] startGame");
+  // ====== BGM 音量UI ======
+  const volSlider = document.getElementById("bgmVol");
+  const volVal    = document.getElementById("bgmVolVal");
+  function loadSavedBgmVolume(){
+    const s = localStorage.getItem("px_bgm_vol");
+    const v = s != null ? Number(s) : 0.4;
+    return (Number.isFinite(v) && v >= 0 && v <= 1) ? v : 0.4;
   }
 
-  function cancelAnim() {
-    if (rafId != null) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
+  // ====== ステート ======
+  let images = {};         // avatarId -> HTMLImageElement
+  let avatars = [];        // [{id,file,color}]
+  let palette = [];        // ["#..",...]
+  let board = null;        // [row][col] -> {color, avatarId} | null
+  let dropOffsetY = 0;     // 天井降下オフセット
+  let shotsUsed = 0;
+  let state = "ready";     // ready | firing | paused | over | clear
+  let shooter = null;      // {x,y}
+  let aim = {x: 0, y: 0};  // 照準点
+  let moving = null;       // 発射中の玉 {x,y,vx,vy,r,color,avatarId}
+  let nextBall = null;
+
+  // タッチ
+  let touchAiming = false;
+  let activeTouchId = null;
+
+  // ====== サウンド（BGMはWeb Audioで音量制御） ======
+  let audioUnlocked = false;
+
+  // <audio> 実体（メディアソース）
+  let bgmEl = null;
+
+  // Web Audio Graph
+  let audioCtx   = null;          // (webkit)AudioContext
+  let bgmSource  = null;          // MediaElementAudioSourceNode（1回だけ作成可能）
+  let bgmGain    = null;          // GainNode（音量）
+  let bgmVolume  = loadSavedBgmVolume(); // 0..1 保存値
+
+  function ensureAudioGraph(){
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new AC();
+    }
+    if (!bgmEl) {
+      bgmEl = new Audio("assets/sound/bgm.mp3");
+      bgmEl.loop = true;
+      // iOSでは <audio>.volume は効かないが、他ブラウザでは一応保険で反映
+      bgmEl.volume = bgmVolume;
+    }
+    if (!bgmSource) {
+      // MediaElementSource は 1 つの <audio> につき 1 回だけ
+      bgmSource = audioCtx.createMediaElementSource(bgmEl);
+      bgmGain   = audioCtx.createGain();
+      bgmGain.gain.value = bgmVolume;
+      bgmSource.connect(bgmGain).connect(audioCtx.destination);
     }
   }
 
-  // ====== アセット読み込み ======
-
-  async function loadAllAssets() {
-    // avatars.json 読み込み（色/ファイル一覧）
-    await loadAvatarsJSON();
-
-    // 画像をまとめて読み込み（欠落を許容）
-    await loadAvatarImagesSafe();
-
-    // 必要な効果音あれば（存在しない場合はスキップ）
-    await loadSoundsSafe([
-      { key: "shoot",  file: "assets/sound/shot.mp3"  },
-      { key: "pop",    file: "assets/sound/hit.mp3"    },
-      { key: "clear",  file: "assets/sound/clear.mp3"  },
-      { key: "over",   file: "assets/sound/over.mp3"   },
-      { key: "bgm",    file: "assets/sound/bgm.mp3", loop: true, volume: 0.4 }
-    ]);
+  function setBgmVolumeNorm(v){ // 0..1
+    bgmVolume = Math.max(0, Math.min(1, v));
+    localStorage.setItem("px_bgm_vol", String(bgmVolume));
+    if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
+    if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
+    // 反映先：Web Audio（優先）/ <audio>.volume（保険）
+    if (bgmGain) bgmGain.gain.value = bgmVolume;
+    if (bgmEl)   bgmEl.volume = bgmVolume;
   }
 
-  async function loadAvatarsJSON() {
-    const resp = await fetch("data/avatars.json", { cache: "no-store" });
-    if (!resp.ok) {
-      throw new Error(`avatars.json 読み込み失敗: ${resp.status} ${resp.statusText}`);
-    }
+  // UI初期値反映
+  if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
+  if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
+  if (volSlider) {
+    volSlider.addEventListener("input", ()=>{
+      const v = Number(volSlider.value) / 100;
+      setBgmVolumeNorm(v);
+    });
+  }
+
+  async function playBGM(){
+    ensureAudioGraph();
+    try { await audioCtx.resume(); } catch {}
+    bgmEl.play().catch(()=>{ /* ユーザー操作前は失敗する */ });
+  }
+  function stopBGM(){ if (bgmEl) bgmEl.pause(); }
+
+  // SFX（共通）
+  function playShotSfx(){
+    const snd = new Audio("assets/sound/shot.mp3");
+    snd.volume = 0.5;
+    snd.play().catch(()=>{});
+  }
+  function playHitSfx(){
+    const snd = new Audio("assets/sound/hit.mp3");
+    snd.volume = 0.6;
+    snd.play().catch(()=>{});
+  }
+
+  // 個別ボイス
+  function playFireVoice(avatarId){
+    const snd = new Audio(`assets/sound/fire_${avatarId}.mp3`);
+    snd.volume = 0.7;
+    snd.play().catch(()=>{});
+  }
+  function playClearVoice(avatarId){
+    const snd = new Audio(`assets/sound/clear_${avatarId}.mp3`);
+    snd.volume = 0.8;
+    snd.play().catch(()=>{});
+  }
+
+  // ====== 画像ローダー ======
+  const BLOB_URLS = [];
+  window.addEventListener("unload", () => { BLOB_URLS.forEach(u => URL.revokeObjectURL(u)); });
+
+  function guessMimeFromName(name){
+    const mDot = name.match(/\.([a-zA-Z0-9]+)(?:\?.*)?$/);
+    const mComma = name.match(/,([a-zA-Z0-9]+)$/);
+    const ext = (mDot && mDot[1]) || (mComma && mComma[1]) || "";
+    const lower = (ext || "").toLowerCase();
+    if (lower === "png")  return "image/png";
+    if (lower === "jpg" || lower === "jpeg") return "image/jpeg";
+    if (lower === "webp") return "image/webp";
+    if (lower === "gif")  return "image/gif";
+    return "";
+  }
+
+  function loadImageSmart(url){
+    return new Promise(async (resolve, reject) => {
+      const hasDotExt = /\.[a-zA-Z0-9]+(?:\?.*)?$/.test(url);
+      if (hasDotExt) {
+        const img = new Image();
+        img.src = url + (url.includes("?") ? "" : "?v=1");
+        img.onload = () => resolve(img);
+        img.onerror = (e) => reject(e);
+        return;
+      }
+      try{
+        const res = await fetch(url, { cache: "reload" });
+        const buf = await res.arrayBuffer();
+        const mime = guessMimeFromName(url) || "image/png";
+        const blob = new Blob([buf], { type: mime });
+        const objUrl = URL.createObjectURL(blob);
+        BLOB_URLS.push(objUrl);
+        const img = new Image();
+        img.src = objUrl;
+        img.onload = () => resolve(img);
+        img.onerror = (e) => reject(e);
+      }catch(err){ reject(err); }
+    });
+  }
+
+  // ====== データ読み込み ======
+  async function loadAvatars(){
+    const resp = await fetch("data/avatars.json");
     const data = await resp.json();
-
-    // 色パレット
-    palette = Array.isArray(data.palette) ? data.palette.slice() : [];
-
-    // アバター一覧
-    if (!Array.isArray(data.avatars)) {
-      throw new Error("avatars.json の 'avatars' が配列ではありません。");
-    }
-
-    // ID重複チェック（警告のみ）
-    const seen = new Set();
-    const dup = [];
-    for (const a of data.avatars) {
-      if (!a || !a.id || !a.file) continue;
-      if (seen.has(a.id)) dup.push(a.id);
-      seen.add(a.id);
-    }
-    if (dup.length) {
-      console.warn("[game] avatars.json: ID重複があります →", Array.from(new Set(dup)));
-    }
-
-    avatars = data.avatars.slice();
-  }
-
-  async function loadAvatarImagesSafe() {
-    // 画像の同時読み込み（1件でも失敗で全体停止…を避ける）
-    const tasks = avatars.map(a =>
-      loadImageSmart(a.file).then(img => ({ status: "fulfilled", a, img }))
-        .catch(err => ({ status: "rejected", a, err }))
+    palette = data.palette;
+    avatars = data.avatars;
+    const jobs = avatars.map(a =>
+      loadImageSmart(a.file).then(img => { images[a.id] = img; })
     );
-
-    const results = await Promise.all(tasks); // ← 個別に catch 済みなので allSettled 代替
-
-    // 失敗は除外、成功だけ詰め直す
-    const okAvatars = [];
-    for (const r of results) {
-      if (r.status === "fulfilled") {
-        images[r.a.id] = r.img;
-        okAvatars.push(r.a);
-      } else {
-        console.warn("[game] missing asset (skip):", r.a && r.a.file, r.err && String(r.err));
-      }
-    }
-
-    // 1件も成功が無い場合はダミーを1枚作っておく（ゲームが真っ黒を避ける）
-    if (okAvatars.length === 0) {
-      console.warn("[game] 有効なアバター画像が0件でした。ダミーを生成します。");
-      const dummyId = "dummy";
-      images[dummyId] = makeDummyImage(48, 48);
-      avatars = [{ id: dummyId, file: "(dummy)", color: "#888888" }];
-      return;
-    }
-
-    avatars = okAvatars;
+    await Promise.all(jobs);
   }
 
-  function loadImageSmart(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.decoding = "async";
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error(`Image 404: ${src}`));
-      img.src = src;
-    });
-  }
-
-  function makeDummyImage(w, h) {
-    const c = document.createElement("canvas");
-    c.width = w; c.height = h;
-    const x = c.getContext("2d");
-    x.fillStyle = "#444";
-    x.fillRect(0,0,w,h);
-    x.strokeStyle = "#aaa";
-    x.lineWidth = 2;
-    x.beginPath();
-    x.moveTo(0,0); x.lineTo(w,h);
-    x.moveTo(w,0); x.lineTo(0,h);
-    x.stroke();
-    return c;
-  }
-
-  async function loadSoundsSafe(list) {
-    // オーディオはブラウザの自動再生制約があるため、ここではデコードのみ実施
-    for (const s of list) {
-      const a = new Audio();
-      a.preload = "auto";
-      if (s.loop) a.loop = true;
-      if (typeof s.volume === "number") a.volume = s.volume;
-      a.src = s.file;
-
-      // 存在チェック（HEADが使えない環境でもonerrorで拾う）
-      try {
-        await new Promise((res, rej) => {
-          a.oncanplaythrough = () => res();
-          a.onerror = () => rej(new Error(`Audio 404: ${s.file}`));
-          // iOS系でoncanplaythroughが呼ばれにくいことがあるのでタイムアウト保険
-          setTimeout(() => res(), 2000);
-        });
-        sounds[s.key] = a;
-      } catch (e) {
-        console.warn("[game] missing sound (skip):", s.file, String(e));
+  // ====== ランダム初期配置 ======
+  async function loadLevel(){
+    board = PXGrid.createBoard(CONFIG.BOARD_ROWS, CONFIG.COLS);
+    for (let r = 0; r < CONFIG.INIT_ROWS; r++){
+      for (let c = 0; c < CONFIG.COLS; c++){
+        if (Math.random() < CONFIG.EMPTY_RATE) continue;
+        const avatar = avatars[Math.floor(Math.random() * avatars.length)];
+        board[r][c] = { color: avatar.color, avatarId: avatar.id };
       }
     }
   }
 
-  // ====== ゲームセットアップ ======
-
-  function setupInitialState() {
-    // 発射機と次手
-    setupShooter();
-    setupQueue();
+  // 次弾
+  function makeNextBall(){
+    const colors = PXGrid.existingColors(board);
+    const color = colors.length
+      ? colors[Math.floor(Math.random()*colors.length)]
+      : palette[Math.floor(Math.random()*palette.length)];
+    const pool = avatars.filter(a => a.color.toLowerCase() === color.toLowerCase());
+    const avatar = pool.length
+      ? pool[Math.floor(Math.random() * pool.length)]
+      : avatars[Math.floor(Math.random() * avatars.length)];
+    return { color: avatar.color, avatarId: avatar.id };
   }
 
-  function setupShooter() {
-    // 中央下に設置
-    STATE.shooter = {
-      x: W * 0.5,
-      y: H - 64,
-      angle: -Math.PI / 2,   // 上向き
-      power: 12,
-      ready: true,
-      current: pickAvatarId()
-    };
-  }
-
-  function setupQueue() {
-    STATE.nextQueue = [];
-    for (let i = 0; i < 3; i++) {
-      STATE.nextQueue.push(pickAvatarId());
+  // ====== 初期化 ======
+  async function init(){
+    await loadAvatars();
+    await loadLevel();
+    shooter = { x: cv.width/2, y: cv.height - CONFIG.BOTTOM_MARGIN };
+    aim.x = shooter.x;
+    aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
+    dropOffsetY = 0;
+    shotsUsed = 0;
+    state = "ready";
+    moving = null;
+    nextBall = makeNextBall();
+    if (shotsLeftEl){
+      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
     }
+    hideOverlay();
+    loop(0);
   }
 
-  function setupStage() {
-    // 簡易：上部に数段だけ並べる
-    const cols = 12;
-    const rows = 6;
-    const radius = 20;
-    const offsetX = (W - cols * radius * 2) * 0.5 + radius;
-    const offsetY = 60;
+  // ====== 入力（PCマウス） ======
+  cv.addEventListener("mousemove", e=>{
+    if (touchAiming) return;
+    const {x,y} = clientToCanvas(e.clientX, e.clientY);
+    aim.x = clampAimX(x);
+    aim.y = Math.min(y, shooter.y - 12);
+  });
+  cv.addEventListener("click", ()=>{ if (state === "ready") fire(); });
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const id = pickAvatarId();
-        STATE.bubbles.push({
-          x: offsetX + c * radius * 2,
-          y: offsetY + r * radius * 2,
-          r: radius,
-          id,
-          vx: 0,
-          vy: 0,
-          fixed: true,
-          remove: false
-        });
-      }
+  // ====== 入力（モバイル） ======
+  cv.addEventListener("touchstart", (e)=>{
+    if (e.changedTouches.length === 0) return;
+    const t = e.changedTouches[0];
+    const {x} = clientToCanvas(t.clientX, t.clientY);
+    touchAiming = true;
+    activeTouchId = t.identifier;
+    aim.x = clampAimX(x);
+    aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
+    e.preventDefault();
+  }, {passive:false});
+  cv.addEventListener("touchmove", (e)=>{
+    if (!touchAiming) return;
+    const t = findTouch(e.changedTouches, activeTouchId);
+    if (!t) return;
+    const {x} = clientToCanvas(t.clientX, t.clientY);
+    aim.x = clampAimX(x);
+    aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
+    e.preventDefault();
+  }, {passive:false});
+  cv.addEventListener("touchend", (e)=>{
+    if (!touchAiming) return;
+    const t = findTouch(e.changedTouches, activeTouchId);
+    if (!t) return;
+    touchAiming = false;
+    activeTouchId = null;
+    if (state === "ready") fire();
+    e.preventDefault();
+  }, {passive:false});
+  cv.addEventListener("touchcancel", (e)=>{
+    if (!touchAiming) return;
+    const t = findTouch(e.changedTouches, activeTouchId);
+    if (!t) return;
+    touchAiming = false;
+    activeTouchId = null;
+    e.preventDefault();
+  }, {passive:false});
+
+  function findTouch(touchList, id){
+    for (let i=0;i<touchList.length;i++){
+      if (touchList[i].identifier === id) return touchList[i];
     }
-  }
-
-  function pickAvatarId() {
-    if (avatars.length === 0) return "dummy";
-    const i = (Math.random() * avatars.length) | 0;
-    return avatars[i].id;
-  }
-
-  // ====== 入力処理 ======
-  function bindInputs() {
-    function localXY(ev) {
-      const rect = canvas.getBoundingClientRect();
-      let clientX, clientY;
-      if (ev.touches && ev.touches.length) {
-        clientX = ev.touches[0].clientX; clientY = ev.touches[0].clientY;
-      } else {
-        clientX = ev.clientX; clientY = ev.clientY;
-      }
-      return {
-        x: (clientX - rect.left) * (canvas.width / rect.width),
-        y: (clientY - rect.top)  * (canvas.height / rect.height),
-      };
-    }
-
-    canvas.addEventListener("pointerdown", (e) => {
-      INPUT.pointerDown = true;
-      const p = localXY(e);
-      INPUT.pointerX = p.x; INPUT.pointerY = p.y;
-      aimShooter(p);
-    });
-
-    canvas.addEventListener("pointermove", (e) => {
-      const p = localXY(e);
-      INPUT.pointerX = p.x; INPUT.pointerY = p.y;
-      aimShooter(p);
-    });
-
-    window.addEventListener("pointerup", () => {
-      if (!INPUT.pointerDown) return;
-      INPUT.pointerDown = false;
-      // 発射
-      shoot();
-    });
-
-    // リサイズ
-    window.addEventListener("resize", resizeCanvas);
-
-    // タイトル→開始のためのキーバインド
-    window.addEventListener("keydown", (e) => {
-      if (STATE.scene === "title" && (e.code === "Space" || e.code === "Enter")) {
-        startGame();
-      }
-    });
-  }
-
-  function aimShooter(p) {
-    if (!STATE.shooter) return;
-    const dx = p.x - STATE.shooter.x;
-    const dy = p.y - STATE.shooter.y;
-    STATE.shooter.angle = Math.atan2(dy, dx);
-  }
-
-  function shoot() {
-    const s = STATE.shooter;
-    if (!s || !s.ready || STATE.scene !== "playing") return;
-
-    const speed = s.power;
-    const vx = Math.cos(s.angle) * speed;
-    const vy = Math.sin(s.angle) * speed;
-
-    STATE.bubbles.push({
-      x: s.x,
-      y: s.y,
-      r: 20,
-      id: s.current,
-      vx, vy,
-      fixed: false,
-      remove: false
-    });
-
-    s.ready = false;
-
-    // 次弾繰り上げ
-    s.current = STATE.nextQueue.shift() || pickAvatarId();
-    STATE.nextQueue.push(pickAvatarId());
-
-    // 効果音
-    playSound("shoot");
-  }
-
-  function playSound(key) {
-    const a = sounds[key];
-    if (!a) return;
-    try {
-      // iOS制限対策: ユーザ操作後にのみ再生が通る
-      a.currentTime = 0;
-      a.play().catch(()=>{});
-    } catch {}
-  }
-
-  // ====== 更新・描画 ======
-  function update(dt) {
-    if (STATE.scene !== "playing") return;
-
-    STATE.time += dt;
-
-    // 玉の移動・壁反射
-    for (const b of STATE.bubbles) {
-      if (b.fixed) continue;
-      b.x += b.vx;
-      b.y += b.vy;
-
-      // 壁反射
-      if (b.x < b.r)   { b.x = b.r;   b.vx *= -1; }
-      if (b.x > W-b.r) { b.x = W-b.r; b.vx *= -1; }
-      if (b.y < b.r)   { b.y = b.r;   b.vy *= -1; }
-
-      // 既存固定玉に衝突したら固定
-      const hit = collideWithFixed(b);
-      if (hit) {
-        b.fixed = true;
-        b.vx = b.vy = 0;
-        // 連結消去の簡易ルール
-        const removed = tryPopConnected(b);
-        if (removed > 0) {
-          STATE.score += removed * 10;
-          playSound("pop");
-        }
-        // 次弾OK
-        STATE.shooter.ready = true;
-      }
-    }
-
-    // 画面外に落ちた飛翔体は消す
-    for (const b of STATE.bubbles) {
-      if (!b.fixed && b.y > H + b.r * 2) b.remove = true;
-    }
-    purgeRemoved();
-
-    // クリア/ゲームオーバー判定（簡易）
-    const anyTop = STATE.bubbles.some(b => b.fixed && b.y < 40);
-    if (!STATE.bubbles.some(b => b.fixed)) {
-      STATE.scene = "clear";
-      playSound("clear");
-      STATE.shooter.ready = false;
-      cancelAnim();
-    } else if (anyTop) {
-      STATE.scene = "gameover";
-      playSound("over");
-      STATE.shooter.ready = false;
-      cancelAnim();
-    }
-  }
-
-  function collideWithFixed(mov) {
-    // 固定玉に接触したら「その場で固定」するシンプル仕様
-    for (const f of STATE.bubbles) {
-      if (!f.fixed) continue;
-      const dx = mov.x - f.x;
-      const dy = mov.y - f.y;
-      const rr = mov.r + f.r;
-      if (dx*dx + dy*dy <= rr*rr) {
-        // 近傍のグリッドに吸着（簡易: fの上側にくっつける）
-        const ang = Math.atan2(dy, dx);
-        mov.x = f.x + Math.cos(ang) * rr;
-        mov.y = f.y + Math.sin(ang) * rr;
-        return true;
-      }
-    }
-    // 天井に着いたら固定
-    if (mov.y <= mov.r + 40) {
-      mov.y = mov.r + 40;
-      return true;
-    }
-    return false;
-  }
-
-  function tryPopConnected(seed) {
-    // 同色3つ以上で消える簡易ルール
-    const group = floodFill(seed);
-    if (group.length >= 3) {
-      for (const b of group) b.remove = true;
-      purgeRemoved();
-      return group.length;
-    }
-    return 0;
-  }
-
-  function floodFill(seed) {
-    const stack = [seed];
-    const visited = new Set();
-    const same = [];
-    while (stack.length) {
-      const cur = stack.pop();
-      const key = STATE.bubbles.indexOf(cur);
-      if (visited.has(key)) continue;
-      visited.add(key);
-      if (!cur.fixed) continue;
-      if (cur.id !== seed.id) continue;
-      same.push(cur);
-      for (const nb of neighbors(cur)) {
-        const nk = STATE.bubbles.indexOf(nb);
-        if (!visited.has(nk)) stack.push(nb);
-      }
-    }
-    return same;
-  }
-
-  function neighbors(b) {
-    const near = [];
-    const rr = (b.r * 2 + 2) ** 2;
-    for (const o of STATE.bubbles) {
-      if (!o.fixed || o === b) continue;
-      const dx = o.x - b.x;
-      const dy = o.y - b.y;
-      if (dx*dx + dy*dy <= rr) near.push(o);
-    }
-    return near;
-  }
-
-  function purgeRemoved() {
-    for (let i = STATE.bubbles.length - 1; i >= 0; i--) {
-      if (STATE.bubbles[i].remove) STATE.bubbles.splice(i, 1);
-    }
-  }
-
-  function draw(dt) {
-    // 背景
-    ctx.fillStyle = "#0b0b0b";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // タイトル
-    if (STATE.scene === "title") {
-      drawTitle();
-      return;
-    }
-
-    // バブル
-    for (const b of STATE.bubbles) {
-      drawBubble(b);
-    }
-
-    // シューター
-    drawShooter();
-
-    // HUD
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "16px system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans JP', sans-serif";
-    ctx.fillText(`SCORE: ${STATE.score}`, 16, 24);
-
-    if (STATE.scene === "clear" || STATE.scene === "gameover") {
-      drawResultOverlay();
-    }
-  }
-
-  function drawTitle() {
-    ctx.fillStyle = "#10151a";
-    ctx.fillRect(0,0,canvas.width, canvas.height);
-
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 36px system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans JP', sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("BUBBLE SHOOTER", canvas.width/2, canvas.height/2 - 40);
-
-    ctx.font = "18px system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans JP', sans-serif";
-    ctx.fillText("クリック / タップで方向 → 離して発射", canvas.width/2, canvas.height/2 + 6);
-    ctx.fillText("Space/Enter でも開始できます", canvas.width/2, canvas.height/2 + 32);
-  }
-
-  function drawResultOverlay() {
-    ctx.save();
-    ctx.globalAlpha = 0.85;
-    ctx.fillStyle = STATE.scene === "clear" ? "#124d2b" : "#4d1212";
-    ctx.fillRect(0,0,canvas.width, canvas.height);
-    ctx.restore();
-
-    ctx.fillStyle = "#fff";
-    ctx.textAlign = "center";
-    ctx.font = "bold 40px system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans JP', sans-serif";
-    ctx.fillText(STATE.scene === "clear" ? "CLEAR!" : "GAME OVER", canvas.width/2, canvas.height/2 - 8);
-
-    ctx.font = "20px system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans JP', sans-serif";
-    ctx.fillText("Space/Enter で再スタート", canvas.width/2, canvas.height/2 + 28);
-  }
-
-  function drawBubble(b) {
-    // 塗り色
-    const a = avatars.find(v => v.id === b.id);
-    const color = a?.color || "#cccccc";
-
-    // 円
-    ctx.beginPath();
-    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-    ctx.closePath();
-    ctx.fillStyle = color;
-    ctx.fill();
-
-    // 画像（あれば）
-    const img = images[b.id];
-    if (img) {
-      const s = b.r * 1.6;
-      ctx.drawImage(img, b.x - s/2, b.y - s/2, s, s);
-    }
-  }
-
-  function drawShooter() {
-    const s = STATE.shooter;
-    if (!s) return;
-
-    // 砲台
-    ctx.strokeStyle = "#dddddd";
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(s.x, s.y);
-    ctx.lineTo(s.x + Math.cos(s.angle) * 40, s.y + Math.sin(s.angle) * 40);
-    ctx.stroke();
-
-    // 次弾表示
-    const r = 20;
-    ctx.fillStyle = "#222";
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, r + 6, 0, Math.PI*2);
-    ctx.fill();
-
-    // 現在の弾
-    drawBubble({ x: s.x, y: s.y, r, id: s.current, fixed: true });
-
-    // キュー表示
-    let ox = s.x + 60;
-    for (const id of STATE.nextQueue) {
-      drawBubble({ x: ox, y: s.y, r: 14, id, fixed: true });
-      ox += 36;
-    }
+    return null;
   }
 
   // ====== ユーティリティ ======
-
-  function resizeCanvas() {
-    // CSSサイズに合わせて内部解像度を合わせる（高DPI考慮）
-    const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
-    const rect = canvas.getBoundingClientRect();
-    const targetW = Math.max(640, Math.floor(rect.width  * dpr));
-    const targetH = Math.max(360, Math.floor(rect.height * dpr));
-
-    canvas.width = targetW;
-    canvas.height = targetH;
-
-    W = canvas.width;
-    H = canvas.height;
+  function clientToCanvas(clientX, clientY){
+    const rect = cv.getBoundingClientRect();
+    const scaleX = cv.width / rect.width;
+    const scaleY = cv.height / rect.height;
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+  }
+  function clampAimX(x){
+    const minX = CONFIG.LEFT_MARGIN + CONFIG.R;
+    const maxX = cv.width - CONFIG.RIGHT_MARGIN - CONFIG.R;
+    return Math.min(maxX, Math.max(minX, x));
+  }
+  function applyMinAngle(vx, vy){
+    const angle = Math.atan2(-vy, vx);
+    const min = CONFIG.MIN_AIM_ANGLE_DEG * Math.PI / 180;
+    const sign = angle < 0 ? -1 : 1;
+    if (Math.abs(angle) < min){
+      const a = sign * min;
+      const speed = Math.hypot(vx, vy) || 1;
+      return { vx: Math.cos(a) * speed, vy: -Math.sin(a) * speed };
+    }
+    return { vx, vy };
   }
 
-  // ====== 公開関数 ======
-  window.init = init;
-  window.startGame = startGame;
+  // ====== 発射 ======
+  function fire(){
+    if (state !== "ready" || !nextBall) return;
+    let dx = aim.x - shooter.x;
+    let dy = aim.y - shooter.y;
+    if (dy >= -4) dy = -4; // 上方向限定
+    const len = Math.hypot(dx,dy) || 1;
+    let vx = (dx/len) * CONFIG.SHOT_SPEED;
+    let vy = (dy/len) * CONFIG.SHOT_SPEED;
+    ({vx, vy} = applyMinAngle(vx, vy));
+    moving = {
+      x: shooter.x, y: shooter.y, r: CONFIG.R,
+      vx, vy,
+      color: nextBall.color, avatarId: nextBall.avatarId
+    };
+    state = "firing";
 
+    if (audioUnlocked) {
+      playShotSfx();                  // 共通発射音
+      playFireVoice(nextBall.avatarId); // 個別ボイス
+    }
+
+    nextBall = makeNextBall();
+  }
+
+  // ====== 配置・消去 ======
+  function placeAt(row,col,ball){
+    if (!PXGrid.inBounds(board,row,col)) return false;
+    if (row >= board.length) return false;
+    board[row][col] = { color: ball.color, avatarId: ball.avatarId };
+    return true;
+  }
+
+  function handleMatchesAndFalls(sr, sc){
+    const cluster = PXGrid.findCluster(board, sr, sc);
+    if (cluster.length >= CONFIG.CLEAR_MATCH){
+      for (const {r,c} of cluster){
+        if (board[r][c]){
+          if (audioUnlocked) playClearVoice(board[r][c].avatarId);
+          board[r][c] = null;
+        }
+      }
+      const connected = PXGrid.findCeilingConnected(board);
+      for (let r = 0; r < board.length; r++){
+        for (let c = 0; c < CONFIG.COLS; c++){
+          const cell = board[r][c];
+          if (!cell) continue;
+          const key = `${r},${c}`;
+          if (!connected.has(key)){
+            if (audioUnlocked) playClearVoice(cell.avatarId);
+            board[r][c] = null;
+          }
+        }
+      }
+    }
+  }
+
+  // ====== 判定 ======
+  function isCleared(){
+    for (let r = 0; r < board.length; r++){
+      for (let c = 0; c < CONFIG.COLS; c++){
+        if (board[r][c]) return false;
+      }
+    }
+    return true;
+  }
+  function isGameOver(){
+    const bottomY = cv.height - CONFIG.BOTTOM_MARGIN;
+    for (let r = 0; r < board.length; r++){
+      for (let c = 0; c < CONFIG.COLS; c++){
+        const cell = board[r][c];
+        if (!cell) continue;
+        const {x,y} = PXGrid.cellCenter(r,c,dropOffsetY);
+        if (y + CONFIG.R >= bottomY) return true;
+      }
+    }
+    return false;
+  }
+  function dropCeilingIfNeeded(){
+    if (shotsUsed > 0 && shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS === 0){
+      dropOffsetY += PXGrid.ROW_H;
+    }
+  }
+
+  // ====== UIボタン ======
+  if (btnPause){
+    btnPause.addEventListener("click", ()=>{
+      if (state === "paused") return;
+      state = "paused";
+      if (audioUnlocked) stopBGM();
+      showOverlay("PAUSED");
+    });
+  }
+  if (btnRetry){ btnRetry.addEventListener("click", ()=> reset()); }
+  if (btnResume){
+    btnResume.addEventListener("click", ()=>{
+      if (state !== "paused") return;
+      hideOverlay();
+      state = "ready";
+      if (audioUnlocked) playBGM();
+    });
+  }
+  if (btnOverlayRetry){ btnOverlayRetry.addEventListener("click", ()=> reset()); }
+
+  // ====== START クリックでオーディオ解禁＆ゲーム開始 ======
+  btnStart.addEventListener("click", async ()=>{
+    if (!audioUnlocked) {
+      audioUnlocked = true;
+      ensureAudioGraph();
+      try { await audioCtx.resume(); } catch {}
+      setBgmVolumeNorm(bgmVolume); // UI値をGainに反映
+      playBGM();                   // ユーザー操作の文脈で確実に再生
+    }
+    startOverlay.classList.add("hidden");
+    if (!board) await init(); else await reset();
+  });
+
+  // ====== reset/init 共通 ======
+  async function reset(){
+    await loadLevel();
+    dropOffsetY = 0;
+    shotsUsed = 0;
+    moving = null;
+    nextBall = makeNextBall();
+    state = "ready";
+    if (shotsLeftEl){
+      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
+    }
+    hideOverlay();
+    if (audioUnlocked) playBGM();
+  }
+  function showOverlay(text){
+    if (!overlay) return;
+    overlayText.textContent = text;
+    overlay.classList.remove("hidden");
+    const resumeBtn = document.getElementById("btnResume");
+    if (resumeBtn){
+      if (text === "GAME OVER" || text === "GAME CLEAR!"){
+        resumeBtn.style.display = "none";
+      } else {
+        resumeBtn.style.display = "";
+      }
+    }
+  }
+  function hideOverlay(){ if (overlay) overlay.classList.add("hidden"); }
+
+  // ====== メインループ ======
+  let last = 0;
+  function loop(ts){
+    const dt = (ts - last) / 1000 || 0;
+    last = ts;
+
+    if (state === "firing" && moving){
+      moving.x += moving.vx * dt;
+      moving.y += moving.vy * dt;
+
+      PXPhys.reflectIfNeeded(moving, {
+        left: CONFIG.LEFT_MARGIN,
+        right: cv.width - CONFIG.RIGHT_MARGIN
+      });
+
+      if (PXPhys.hitCeiling(moving, CONFIG.TOP_MARGIN + 24 + dropOffsetY, CONFIG.R)){
+        const cells = PXGrid.nearbyCells(moving.x, moving.y, dropOffsetY);
+        let best = null, bestD2 = 1e15;
+        for (const cell of cells){
+          if (cell.row !== 0) continue;
+          if (board[cell.row][cell.col]) continue;
+          const ctr = PXGrid.cellCenter(cell.row, cell.col, dropOffsetY);
+          const d2 = (ctr.x-moving.x)**2 + (ctr.y-moving.y)**2;
+          if (d2 < bestD2){ bestD2 = d2; best = cell; }
+        }
+        if (best){
+          placeAt(best.row, best.col, moving);
+          if (audioUnlocked) playHitSfx();
+          handleMatchesAndFalls(best.row, best.col);
+          moving = null;
+          shotsUsed++;
+          dropCeilingIfNeeded();
+          state = "ready";
+        } else {
+          moving.y += 1;
+        }
+      } else {
+        const col = PXPhys.checkCollision(moving, board, dropOffsetY, CONFIG.R);
+        if (col.hit){
+          const snap = PXPhys.chooseSnapCell(board, dropOffsetY, CONFIG.R, moving.x, moving.y, {r:col.r, c:col.c});
+          if (snap){
+            placeAt(snap.row, snap.col, moving);
+            if (audioUnlocked) playHitSfx();
+            handleMatchesAndFalls(snap.row, snap.col);
+            moving = null;
+            shotsUsed++;
+            dropCeilingIfNeeded();
+            state = "ready";
+          } else {
+            moving.x -= moving.vx * dt;
+            moving.y -= moving.vy * dt;
+          }
+        }
+      }
+    }
+
+    if (state !== "paused" && state !== "over" && state !== "clear"){
+      if (isGameOver()){
+        state = "over";
+        if (audioUnlocked) stopBGM();
+        showOverlay("GAME OVER");
+      } else if (isCleared()){
+        state = "clear";
+        if (audioUnlocked) stopBGM();
+        showOverlay("GAME CLEAR!");
+      }
+    }
+
+    if (shotsLeftEl){
+      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
+    }
+
+    ctx.clearRect(0,0,cv.width,cv.height);
+
+    ctx.strokeStyle = "rgba(255,255,255,.08)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+      CONFIG.LEFT_MARGIN,
+      CONFIG.TOP_MARGIN,
+      cv.width - CONFIG.LEFT_MARGIN - CONFIG.RIGHT_MARGIN,
+      cv.height - CONFIG.TOP_MARGIN - CONFIG.BOTTOM_MARGIN
+    );
+
+    PXRender.drawBoard(ctx, board, dropOffsetY, CONFIG.R, images);
+
+    if (state === "ready"){
+      PXRender.drawAimGuide(ctx, shooter.x, shooter.y, aim.x, aim.y);
+    }
+
+    if (moving){
+      const img = images[moving.avatarId];
+      PXRender.drawAvatarBubble(ctx, img, moving.x, moving.y, CONFIG.R, moving.color);
+    }
+
+    ctx.fillStyle = "#fff";
+    ctx.globalAlpha = .15;
+    ctx.beginPath(); ctx.arc(shooter.x, shooter.y, CONFIG.R*0.9, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    PXRender.drawNext(cvNext, nextBall, CONFIG.R, images);
+
+    requestAnimationFrame(loop);
+  }
+
+  // 自動起動しない（START待ち）
+  // init();
+
+  // STARTが押されるまで待つ
+  btnStart.addEventListener("click", async ()=>{
+    if (!audioUnlocked) {
+      audioUnlocked = true;
+      ensureAudioGraph();
+      try { await audioCtx.resume(); } catch {}
+      setBgmVolumeNorm(bgmVolume); // UI値をGainに反映
+      playBGM();                   // ユーザー操作の文脈で確実に再生
+    }
+    startOverlay.classList.add("hidden");
+    if (!board) await init(); else await reset();
+  });
 })();
