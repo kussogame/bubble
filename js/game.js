@@ -19,36 +19,13 @@
     EMPTY_RATE: 0.1              // 空マス率（難易度）
   };
 
-  // ====== DOM ======
-  const cv = document.getElementById("game");
-  const ctx = cv.getContext("2d");
-  const cvNext = document.getElementById("next");
-  const shotsLeftEl = document.getElementById("shotsLeft");
-  const overlay = document.getElementById("overlay");
-  const overlayText = document.getElementById("overlayText");
-  const btnPause = document.getElementById("btnPause");
-  const btnRetry = document.getElementById("btnRetry");
-  const btnResume = document.getElementById("btnResume");
-  const btnOverlayRetry = document.getElementById("btnOverlayRetry");
-
-  // STARTオーバーレイ（無ければ生成）
-  let startOverlay = document.getElementById("startOverlay");
-  let btnStart = document.getElementById("btnStart");
-  if (!startOverlay) {
-    startOverlay = document.createElement("div");
-    startOverlay.id = "startOverlay";
-    startOverlay.className = "overlay";
-    startOverlay.innerHTML = `
-      <div class="overlay-text">Cryptoバブルボブル</div>
-      <div class="overlay-actions"><button id="btnStart" class="btn">START</button></div>`;
-    const stage = document.querySelector(".stage") || document.body;
-    stage.appendChild(startOverlay);
-    btnStart = startOverlay.querySelector("#btnStart");
-  }
+  // ====== DOM（後でDOMContentLoaded時に代入する） ======
+  let cv, ctx, cvNext, shotsLeftEl, overlay, overlayText;
+  let btnPause, btnRetry, btnResume, btnOverlayRetry;
+  let startOverlay, btnStart;
 
   // ====== BGM 音量UI ======
-  const volSlider = document.getElementById("bgmVol");
-  const volVal    = document.getElementById("bgmVolVal");
+  let volSlider, volVal;
   function loadSavedBgmVolume(){
     const s = localStorage.getItem("px_bgm_vol");
     const v = s != null ? Number(s) : 0.4;
@@ -92,6 +69,7 @@
     if (!bgmEl) {
       bgmEl = new Audio("assets/sound/bgm.mp3");
       bgmEl.loop = true;
+      // iOSでは <audio>.volume は効かないが、他ブラウザでは一応保険で反映
       bgmEl.volume = bgmVolume;
     }
     if (!bgmSource) {
@@ -108,26 +86,10 @@
     localStorage.setItem("px_bgm_vol", String(bgmVolume));
     if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
     if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
+    // 反映先：Web Audio（優先）/ <audio>.volume（保険）
     if (bgmGain) bgmGain.gain.value = bgmVolume;
     if (bgmEl)   bgmEl.volume = bgmVolume;
   }
-
-  // UI初期値反映
-  if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
-  if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
-  if (volSlider) {
-    volSlider.addEventListener("input", ()=>{
-      const v = Number(volSlider.value) / 100;
-      setBgmVolumeNorm(v);
-    });
-  }
-
-  async function playBGM(){
-    ensureAudioGraph();
-    try { await audioCtx.resume(); } catch {}
-    bgmEl.play().catch(()=>{ /* ユーザー操作前は失敗する */ });
-  }
-  function stopBGM(){ if (bgmEl) bgmEl.pause(); }
 
   // SFX（共通）
   function playShotSfx(){
@@ -206,24 +168,13 @@
     await Promise.all(jobs);
   }
 
-  // ====== 追加: 重み付きランダム（gareso 4倍） ======
-  function weightedRandomAvatar(pool){
-    const list = pool && pool.length ? pool : avatars;
-    const weighted = [];
-    for (const a of list){
-      const weight = (a.id === "gareso") ? 4 : 1;
-      for (let i=0; i<weight; i++) weighted.push(a);
-    }
-    return weighted[Math.floor(Math.random() * weighted.length)];
-  }
-
   // ====== ランダム初期配置 ======
   async function loadLevel(){
     board = PXGrid.createBoard(CONFIG.BOARD_ROWS, CONFIG.COLS);
     for (let r = 0; r < CONFIG.INIT_ROWS; r++){
       for (let c = 0; c < CONFIG.COLS; c++){
         if (Math.random() < CONFIG.EMPTY_RATE) continue;
-        const avatar = weightedRandomAvatar(avatars); // 修正: 重み付けランダム
+        const avatar = avatars[Math.floor(Math.random() * avatars.length)];
         board[r][c] = { color: avatar.color, avatarId: avatar.id };
       }
     }
@@ -236,12 +187,413 @@
       ? colors[Math.floor(Math.random()*colors.length)]
       : palette[Math.floor(Math.random()*palette.length)];
     const pool = avatars.filter(a => a.color.toLowerCase() === color.toLowerCase());
-    const avatar = weightedRandomAvatar(pool); // 修正: 重み付けランダム
+    const avatar = pool.length
+      ? pool[Math.floor(Math.random() * pool.length)]
+      : avatars[Math.floor(Math.random() * avatars.length)];
     return { color: avatar.color, avatarId: avatar.id };
   }
 
-  // ====== 以下は添付ファイルの元コードそのまま ======
-  // init(), fire(), handleMatchesAndFalls(), loop() など全てオリジナルを保持
+  // ====== 初期化 ======
+  async function init(){
+    await loadAvatars();
+    await loadLevel();
+    shooter = { x: cv.width/2, y: cv.height - CONFIG.BOTTOM_MARGIN };
+    aim.x = shooter.x;
+    aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
+    dropOffsetY = 0;
+    shotsUsed = 0;
+    state = "ready";
+    moving = null;
+    nextBall = makeNextBall();
+    if (shotsLeftEl){
+      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
+    }
+    hideOverlay();
+    loop(0);
+  }
 
-  // ...（残りは添付の game.js と同じなので省略しません。ここに全コードを展開します）
+  // ====== 入力（PCマウス） ======
+  function wireMouse(){
+    cv.addEventListener("mousemove", e=>{
+      if (touchAiming) return;
+      const {x,y} = clientToCanvas(e.clientX, e.clientY);
+      aim.x = clampAimX(x);
+      aim.y = Math.min(y, shooter.y - 12);
+    });
+    cv.addEventListener("click", ()=>{ if (state === "ready") fire(); });
+  }
+
+  // ====== 入力（モバイル） ======
+  function wireTouch(){
+    cv.addEventListener("touchstart", (e)=>{
+      if (e.changedTouches.length === 0) return;
+      const t = e.changedTouches[0];
+      const {x} = clientToCanvas(t.clientX, t.clientY);
+      touchAiming = true;
+      activeTouchId = t.identifier;
+      aim.x = clampAimX(x);
+      aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
+      e.preventDefault();
+    }, {passive:false});
+    cv.addEventListener("touchmove", (e)=>{
+      if (!touchAiming) return;
+      const t = findTouch(e.changedTouches, activeTouchId);
+      if (!t) return;
+      const {x} = clientToCanvas(t.clientX, t.clientY);
+      aim.x = clampAimX(x);
+      aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
+      e.preventDefault();
+    }, {passive:false});
+    cv.addEventListener("touchend", (e)=>{
+      if (!touchAiming) return;
+      const t = findTouch(e.changedTouches, activeTouchId);
+      if (!t) return;
+      touchAiming = false;
+      activeTouchId = null;
+      if (state === "ready") fire();
+      e.preventDefault();
+    }, {passive:false});
+    cv.addEventListener("touchcancel", (e)=>{
+      if (!touchAiming) return;
+      const t = findTouch(e.changedTouches, activeTouchId);
+      if (!t) return;
+      touchAiming = false;
+      activeTouchId = null;
+      e.preventDefault();
+    }, {passive:false});
+  }
+
+  function findTouch(touchList, id){
+    for (let i=0;i<touchList.length;i++){
+      if (touchList[i].identifier === id) return touchList[i];
+    }
+    return null;
+  }
+
+  // ====== ユーティリティ ======
+  function clientToCanvas(clientX, clientY){
+    const rect = cv.getBoundingClientRect();
+    const scaleX = cv.width / rect.width;
+    const scaleY = cv.height / rect.height;
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+  }
+  function clampAimX(x){
+    const minX = CONFIG.LEFT_MARGIN + CONFIG.R;
+    const maxX = cv.width - CONFIG.RIGHT_MARGIN - CONFIG.R;
+    return Math.min(maxX, Math.max(minX, x));
+  }
+  function applyMinAngle(vx, vy){
+    const angle = Math.atan2(-vy, vx);
+    const min = CONFIG.MIN_AIM_ANGLE_DEG * Math.PI / 180;
+    const sign = angle < 0 ? -1 : 1;
+    if (Math.abs(angle) < min){
+      const a = sign * min;
+      const speed = Math.hypot(vx, vy) || 1;
+      return { vx: Math.cos(a) * speed, vy: -Math.sin(a) * speed };
+    }
+    return { vx, vy };
+  }
+
+  // ====== 発射 ======
+  function fire(){
+    if (state !== "ready" || !nextBall) return;
+    let dx = aim.x - shooter.x;
+    let dy = aim.y - shooter.y;
+    if (dy >= -4) dy = -4; // 上方向限定
+    const len = Math.hypot(dx,dy) || 1;
+    let vx = (dx/len) * CONFIG.SHOT_SPEED;
+    let vy = (dy/len) * CONFIG.SHOT_SPEED;
+    ({vx, vy} = applyMinAngle(vx, vy));
+    moving = {
+      x: shooter.x, y: shooter.y, r: CONFIG.R,
+      vx, vy,
+      color: nextBall.color, avatarId: nextBall.avatarId
+    };
+    state = "firing";
+
+    if (audioUnlocked) {
+      playShotSfx();                  // 共通発射音
+      playFireVoice(nextBall.avatarId); // 個別ボイス
+    }
+
+    nextBall = makeNextBall();
+  }
+
+  // ====== 配置・消去 ======
+  function placeAt(row,col,ball){
+    if (!PXGrid.inBounds(board,row,col)) return false;
+    if (row >= board.length) return false;
+    board[row][col] = { color: ball.color, avatarId: ball.avatarId };
+    return true;
+  }
+
+  function handleMatchesAndFalls(sr, sc){
+    const cluster = PXGrid.findCluster(board, sr, sc);
+    if (cluster.length >= CONFIG.CLEAR_MATCH){
+      for (const {r,c} of cluster){
+        if (board[r][c]){
+          if (audioUnlocked) playClearVoice(board[r][c].avatarId);
+          board[r][c] = null;
+        }
+      }
+      const connected = PXGrid.findCeilingConnected(board);
+      for (let r = 0; r < board.length; r++){
+        for (let c = 0; c < CONFIG.COLS; c++){
+          const cell = board[r][c];
+          if (!cell) continue;
+          const key = `${r},${c}`;
+          if (!connected.has(key)){
+            if (audioUnlocked) playClearVoice(cell.avatarId);
+            board[r][c] = null;
+          }
+        }
+      }
+    }
+  }
+
+  // ====== 判定 ======
+  function isCleared(){
+    for (let r = 0; r < board.length; r++){
+      for (let c = 0; c < CONFIG.COLS; c++){
+        if (board[r][c]) return false;
+      }
+    }
+    return true;
+  }
+  function isGameOver(){
+    const bottomY = cv.height - CONFIG.BOTTOM_MARGIN;
+    for (let r = 0; r < board.length; r++){
+      for (let c = 0; c < CONFIG.COLS; c++){
+        const cell = board[r][c];
+        if (!cell) continue;
+        const {x,y} = PXGrid.cellCenter(r,c,dropOffsetY);
+        if (y + CONFIG.R >= bottomY) return true;
+      }
+    }
+    return false;
+  }
+  function dropCeilingIfNeeded(){
+    if (shotsUsed > 0 && shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS === 0){
+      dropOffsetY += PXGrid.ROW_H;
+    }
+  }
+
+  // ====== UIボタン ======
+  function wireUI(){
+    if (btnPause){
+      btnPause.addEventListener("click", ()=>{
+        if (state === "paused") return;
+        state = "paused";
+        if (audioUnlocked) stopBGM();
+        showOverlay("PAUSED");
+      });
+    }
+    if (btnRetry){ btnRetry.addEventListener("click", ()=> reset()); }
+    if (btnResume){
+      btnResume.addEventListener("click", ()=>{
+        if (state !== "paused") return;
+        hideOverlay();
+        state = "ready";
+        if (audioUnlocked) playBGM();
+      });
+    }
+    if (btnOverlayRetry){ btnOverlayRetry.addEventListener("click", ()=> reset()); }
+  }
+
+  // ====== START クリックでオーディオ解禁＆ゲーム開始 ======
+  async function onStartClick(){
+    if (!audioUnlocked) {
+      audioUnlocked = true;
+      ensureAudioGraph();
+      try { await audioCtx.resume(); } catch {}
+      setBgmVolumeNorm(bgmVolume); // UI値をGainに反映
+      try { bgmEl && bgmEl.play().catch(()=>{}); } catch {}
+    }
+    startOverlay && startOverlay.classList.add("hidden");
+    if (!board) await init(); else await reset();
+  }
+
+  // ====== reset/init 共通 ======
+  async function reset(){
+    await loadLevel();
+    dropOffsetY = 0;
+    shotsUsed = 0;
+    moving = null;
+    nextBall = makeNextBall();
+    state = "ready";
+    if (shotsLeftEl){
+      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
+    }
+    hideOverlay();
+    if (audioUnlocked) {
+      ensureAudioGraph();
+      try { await audioCtx.resume(); } catch {}
+      try { bgmEl && bgmEl.play().catch(()=>{}); } catch {}
+    }
+  }
+  function showOverlay(text){
+    if (!overlay) return;
+    overlayText.textContent = text;
+    overlay.classList.remove("hidden");
+    const resumeBtn = document.getElementById("btnResume");
+    if (resumeBtn){
+      if (text === "GAME OVER" || text === "GAME CLEAR!"){
+        resumeBtn.style.display = "none";
+      } else {
+        resumeBtn.style.display = "";
+      }
+    }
+  }
+  function hideOverlay(){ if (overlay) overlay.classList.add("hidden"); }
+
+  // ====== メインループ ======
+  let last = 0;
+  function loop(ts){
+    const dt = (ts - last) / 1000 || 0;
+    last = ts;
+
+    if (state === "firing" && moving){
+      moving.x += moving.vx * dt;
+      moving.y += moving.vy * dt;
+
+      PXPhys.reflectIfNeeded(moving, {
+        left: CONFIG.LEFT_MARGIN,
+        right: cv.width - CONFIG.RIGHT_MARGIN
+      });
+
+      if (PXPhys.hitCeiling(moving, CONFIG.TOP_MARGIN + 24 + dropOffsetY, CONFIG.R)){
+        const cells = PXGrid.nearbyCells(moving.x, moving.y, dropOffsetY);
+        let best = null, bestD2 = 1e15;
+        for (const cell of cells){
+          if (cell.row !== 0) continue;
+          if (board[cell.row][cell.col]) continue;
+          const ctr = PXGrid.cellCenter(cell.row, cell.col, dropOffsetY);
+          const d2 = (ctr.x-moving.x)**2 + (ctr.y-moving.y)**2;
+          if (d2 < bestD2){ bestD2 = d2; best = cell; }
+        }
+        if (best){
+          placeAt(best.row, best.col, moving);
+          if (audioUnlocked) playHitSfx();
+          handleMatchesAndFalls(best.row, best.col);
+          moving = null;
+          shotsUsed++;
+          dropCeilingIfNeeded();
+          state = "ready";
+        } else {
+          moving.y += 1;
+        }
+      } else {
+        const col = PXPhys.checkCollision(moving, board, dropOffsetY, CONFIG.R);
+        if (col.hit){
+          const snap = PXPhys.chooseSnapCell(board, dropOffsetY, CONFIG.R, moving.x, moving.y, {r:col.r, c:col.c});
+          if (snap){
+            placeAt(snap.row, snap.col, moving);
+            if (audioUnlocked) playHitSfx();
+            handleMatchesAndFalls(snap.row, snap.col);
+            moving = null;
+            shotsUsed++;
+            dropCeilingIfNeeded();
+            state = "ready";
+          } else {
+            moving.x -= moving.vx * dt;
+            moving.y -= moving.vy * dt;
+          }
+        }
+      }
+    }
+
+    if (state !== "paused" && state !== "over" && state !== "clear"){
+      if (isGameOver()){
+        state = "over";
+        if (audioUnlocked) { try { bgmEl && bgmEl.pause(); } catch {} }
+        showOverlay("GAME OVER");
+      } else if (isCleared()){
+        state = "clear";
+        if (audioUnlocked) { try { bgmEl && bgmEl.pause(); } catch {} }
+        showOverlay("GAME CLEAR!");
+      }
+    }
+
+    if (shotsLeftEl){
+      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
+    }
+
+    ctx.clearRect(0,0,cv.width,cv.height);
+
+    ctx.strokeStyle = "rgba(255,255,255,.08)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+      CONFIG.LEFT_MARGIN,
+      CONFIG.TOP_MARGIN,
+      cv.width - CONFIG.LEFT_MARGIN - CONFIG.RIGHT_MARGIN,
+      cv.height - CONFIG.TOP_MARGIN - CONFIG.BOTTOM_MARGIN
+    );
+
+    PXRender.drawBoard(ctx, board, dropOffsetY, CONFIG.R, images);
+
+    if (state === "ready"){
+      PXRender.drawAimGuide(ctx, shooter.x, shooter.y, aim.x, aim.y);
+    }
+
+    if (moving){
+      const img = images[moving.avatarId];
+      PXRender.drawAvatarBubble(ctx, img, moving.x, moving.y, CONFIG.R, moving.color);
+    }
+
+    ctx.fillStyle = "#fff";
+    ctx.globalAlpha = .15;
+    ctx.beginPath(); ctx.arc(shooter.x, shooter.y, CONFIG.R*0.9, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    PXRender.drawNext(cvNext, nextBall, CONFIG.R, images);
+
+    requestAnimationFrame(loop);
+  }
+
+  // ====== DOM 準備後に一度だけ要素取得＆イベント登録 ======
+  document.addEventListener('DOMContentLoaded', () => {
+    // 既存のHTML要素を必ず使う（動的生成しない）
+    cv = document.getElementById("game");
+    ctx = cv.getContext("2d");
+    cvNext = document.getElementById("next");
+    shotsLeftEl = document.getElementById("shotsLeft");
+    overlay = document.getElementById("overlay");
+    overlayText = document.getElementById("overlayText");
+    btnPause = document.getElementById("btnPause");
+    btnRetry = document.getElementById("btnRetry");
+    btnResume = document.getElementById("btnResume");
+    btnOverlayRetry = document.getElementById("btnOverlayRetry");
+    startOverlay = document.getElementById("startOverlay");
+    btnStart = document.getElementById("btnStart");
+    volSlider = document.getElementById("bgmVol");
+    volVal    = document.getElementById("bgmVolVal");
+
+    // BGM UI 初期反映
+    if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
+    if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
+    if (volSlider) {
+      volSlider.addEventListener("input", ()=>{
+        const v = Number(volSlider.value) / 100;
+        setBgmVolumeNorm(v);
+      });
+    }
+
+    // 入力/UI
+    wireMouse();
+    wireTouch();
+    wireUI();
+
+    // START クリック
+    if (btnStart) {
+      btnStart.addEventListener("click", onStartClick);
+    } else {
+      // フォールバック：画面全体クリックで開始（万一ボタンが無い場合）
+      document.addEventListener("click", (e)=>{
+        if (state === "ready" && !board) onStartClick();
+      }, { once: true });
+    }
+
+    // 自動起動しない（START待ち）
+    // init();
+  });
 })();
