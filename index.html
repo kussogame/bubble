@@ -6,29 +6,19 @@
   <title>Bubble Shooter</title>
   <meta name="robots" content="noindex,nofollow" />
   <link rel="stylesheet" href="css/style.css" />
-  <style>
-    /* 最低限のレイアウト（既存 css があればこちらは消してOK） */
-    html, body { height: 100%; margin: 0; background:#0b0b0b; }
-    .wrap { height: 100%; display: grid; place-items: center; }
-    #game { width: min(96vw, 960px); height: min(54vw, 540px); background: #10151a; display: block; }
-  </style>
 </head>
 <body>
-  <div class="wrap">
-    <canvas id="game" width="960" height="540"></canvas>
-  </div>
+  <!-- 既存CSSで全体レイアウト・背景を制御する想定 -->
+  <canvas id="game" width="960" height="540"></canvas>
 
   <!-- ゲーム本体 -->
   <script src="js/game.js"></script>
 
-  <!-- ★ 方法A：読み込み完了で init() を明示的に呼ぶ -->
+  <!-- 明示初期化（方法A） -->
   <script>
     window.addEventListener('DOMContentLoaded', () => {
-      if (typeof init === 'function') {
-        init(); // 初期化（タイトル表示・入力バインド・アセットロード）
-      } else {
-        console.error('game.js の読み込みに失敗しています（init が見つかりません）');
-      }
+      if (typeof init === 'function') init();
+      else console.error('game.js の読み込みに失敗（init が見つかりません）');
     });
   </script>
 </body>
