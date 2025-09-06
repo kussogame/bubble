@@ -2,61 +2,34 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Puzzle-X (Canvas MVP)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bubble Shooter</title>
   <meta name="robots" content="noindex,nofollow" />
   <link rel="stylesheet" href="css/style.css" />
+  <style>
+    /* 最低限のレイアウト（既存 css があればこちらは消してOK） */
+    html, body { height: 100%; margin: 0; background:#0b0b0b; }
+    .wrap { height: 100%; display: grid; place-items: center; }
+    #game { width: min(96vw, 960px); height: min(54vw, 540px); background: #10151a; display: block; }
+  </style>
 </head>
 <body>
-  <div class="hud">
-    <div class="left">
-      <span class="label">Shots to drop:</span>
-      <span id="shotsLeft">-</span>
-    </div>
-    <div class="right">
-      <!-- 追加：BGM音量コントロール -->
-      <div class="vol">
-        <span class="volLabel">BGM</span>
-        <input id="bgmVol" type="range" min="0" max="100" value="40" />
-        <span id="bgmVolVal" class="volVal">40%</span>
-      </div>
-      <button id="btnPause" class="btn">Pause</button>
-      <button id="btnRetry" class="btn">Retry</button>
-    </div>
+  <div class="wrap">
+    <canvas id="game" width="960" height="540"></canvas>
   </div>
 
-  <div class="stage">
-    <canvas id="game" width="480" height="720" aria-label="game canvas"></canvas>
-
-    <!-- 次弾プレビュー -->
-    <div class="nextDock">
-      <div class="title">NEXT</div>
-      <canvas id="next" width="96" height="96"></canvas>
-    </div>
-
-    <!-- STARTオーバーレイ（JSが無い場合でも見せたいならここに置いてもOK。JS側が自動生成もします） -->
-    <!--
-    <div id="startOverlay" class="overlay">
-      <div class="overlay-text">PUZZLE-X</div>
-      <div class="overlay-actions">
-        <button id="btnStart" class="btn">START</button>
-      </div>
-    </div>
-    -->
-
-    <!-- オーバーレイ（Clear/Over/Paused） -->
-    <div id="overlay" class="overlay hidden">
-      <div id="overlayText" class="overlay-text"></div>
-      <div class="overlay-actions">
-        <button id="btnResume" class="btn">Resume</button>
-        <button id="btnOverlayRetry" class="btn">Retry</button>
-      </div>
-    </div>
-  </div>
-
-  <script src="js/grid.js"></script>
-  <script src="js/physics.js"></script>
-  <script src="js/renderer_canvas.js"></script>
+  <!-- ゲーム本体 -->
   <script src="js/game.js"></script>
+
+  <!-- ★ 方法A：読み込み完了で init() を明示的に呼ぶ -->
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      if (typeof init === 'function') {
+        init(); // 初期化（タイトル表示・入力バインド・アセットロード）
+      } else {
+        console.error('game.js の読み込みに失敗しています（init が見つかりません）');
+      }
+    });
+  </script>
 </body>
 </html>
