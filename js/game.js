@@ -111,8 +111,8 @@
 
     // 必要な効果音あれば（存在しない場合はスキップ）
     await loadSoundsSafe([
-      { key: "shoot",  file: "assets/sound/shoot.mp3"  },
-      { key: "pop",    file: "assets/sound/pop.mp3"    },
+      { key: "shoot",  file: "assets/sound/shot.mp3"  },
+      { key: "pop",    file: "assets/sound/hit.mp3"    },
       { key: "clear",  file: "assets/sound/clear.mp3"  },
       { key: "over",   file: "assets/sound/over.mp3"   },
       { key: "bgm",    file: "assets/sound/bgm.mp3", loop: true, volume: 0.4 }
