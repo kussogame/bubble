@@ -39,7 +39,7 @@
     startOverlay.id = "startOverlay";
     startOverlay.className = "overlay";
     startOverlay.innerHTML = `
-      <div class="overlay-text">JIMINTOU消しゲーム</div>
+      <div class="overlay-text">JIMINトゥ消し(音が出ます)</div>
       <div class="overlay-actions"><button id="btnStart" class="btn">START</button></div>`;
     const stage = document.querySelector(".stage") || document.body;
     stage.appendChild(startOverlay);
