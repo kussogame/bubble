@@ -19,13 +19,36 @@
     EMPTY_RATE: 0.1              // 空マス率（難易度）
   };
 
-  // ====== DOM（後でDOMContentLoaded時に代入する） ======
-  let cv, ctx, cvNext, shotsLeftEl, overlay, overlayText;
-  let btnPause, btnRetry, btnResume, btnOverlayRetry;
-  let startOverlay, btnStart;
+  // ====== DOM ======
+  const cv = document.getElementById("game");
+  const ctx = cv.getContext("2d");
+  const cvNext = document.getElementById("next");
+  const shotsLeftEl = document.getElementById("shotsLeft");
+  const overlay = document.getElementById("overlay");
+  const overlayText = document.getElementById("overlayText");
+  const btnPause = document.getElementById("btnPause");
+  const btnRetry = document.getElementById("btnRetry");
+  const btnResume = document.getElementById("btnResume");
+  const btnOverlayRetry = document.getElementById("btnOverlayRetry");
+
+  // STARTオーバーレイ（無ければ生成）
+  let startOverlay = document.getElementById("startOverlay");
+  let btnStart = document.getElementById("btnStart");
+  if (!startOverlay) {
+    startOverlay = document.createElement("div");
+    startOverlay.id = "startOverlay";
+    startOverlay.className = "overlay";
+    startOverlay.innerHTML = `
+      <div class="overlay-text">Cryptoバブルボブル</div>
+      <div class="overlay-actions"><button id="btnStart" class="btn">START</button></div>`;
+    const stage = document.querySelector(".stage") || document.body;
+    stage.appendChild(startOverlay);
+    btnStart = startOverlay.querySelector("#btnStart");
+  }
 
   // ====== BGM 音量UI ======
-  let volSlider, volVal;
+  const volSlider = document.getElementById("bgmVol");
+  const volVal    = document.getElementById("bgmVolVal");
   function loadSavedBgmVolume(){
     const s = localStorage.getItem("px_bgm_vol");
     const v = s != null ? Number(s) : 0.4;
@@ -56,10 +79,10 @@
   let bgmEl = null;
 
   // Web Audio Graph
-  let audioCtx   = null;          // (webkit)AudioContext
-  let bgmSource  = null;          // MediaElementAudioSourceNode（1回だけ作成可能）
-  let bgmGain    = null;          // GainNode（音量）
-  let bgmVolume  = loadSavedBgmVolume(); // 0..1 保存値
+  let audioCtx   = null;
+  let bgmSource  = null;
+  let bgmGain    = null;
+  let bgmVolume  = loadSavedBgmVolume();
 
   function ensureAudioGraph(){
     if (!audioCtx) {
@@ -69,11 +92,9 @@
     if (!bgmEl) {
       bgmEl = new Audio("assets/sound/bgm.mp3");
       bgmEl.loop = true;
-      // iOSでは <audio>.volume は効かないが、他ブラウザでは一応保険で反映
       bgmEl.volume = bgmVolume;
     }
     if (!bgmSource) {
-      // MediaElementSource は 1 つの <audio> につき 1 回だけ
       bgmSource = audioCtx.createMediaElementSource(bgmEl);
       bgmGain   = audioCtx.createGain();
       bgmGain.gain.value = bgmVolume;
@@ -81,17 +102,31 @@
     }
   }
 
-  function setBgmVolumeNorm(v){ // 0..1
+  function setBgmVolumeNorm(v){
     bgmVolume = Math.max(0, Math.min(1, v));
     localStorage.setItem("px_bgm_vol", String(bgmVolume));
     if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
     if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
-    // 反映先：Web Audio（優先）/ <audio>.volume（保険）
     if (bgmGain) bgmGain.gain.value = bgmVolume;
     if (bgmEl)   bgmEl.volume = bgmVolume;
   }
 
-  // SFX（共通）
+  if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
+  if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
+  if (volSlider) {
+    volSlider.addEventListener("input", ()=>{
+      const v = Number(volSlider.value) / 100;
+      setBgmVolumeNorm(v);
+    });
+  }
+
+  async function playBGM(){
+    ensureAudioGraph();
+    try { await audioCtx.resume(); } catch {}
+    bgmEl.play().catch(()=>{});
+  }
+  function stopBGM(){ if (bgmEl) bgmEl.pause(); }
+
   function playShotSfx(){
     const snd = new Audio("assets/sound/shot.mp3");
     snd.volume = 0.5;
@@ -102,8 +137,6 @@
     snd.volume = 0.6;
     snd.play().catch(()=>{});
   }
-
-  // 個別ボイス
   function playFireVoice(avatarId){
     const snd = new Audio(`assets/sound/fire_${avatarId}.mp3`);
     snd.volume = 0.7;
@@ -156,7 +189,6 @@
     });
   }
 
-  // ====== データ読み込み ======
   async function loadAvatars(){
     const resp = await fetch("data/avatars.json");
     const data = await resp.json();
@@ -168,7 +200,6 @@
     await Promise.all(jobs);
   }
 
-  // ====== ランダム初期配置 ======
   async function loadLevel(){
     board = PXGrid.createBoard(CONFIG.BOARD_ROWS, CONFIG.COLS);
     for (let r = 0; r < CONFIG.INIT_ROWS; r++){
@@ -180,7 +211,6 @@
     }
   }
 
-  // 次弾
   function makeNextBall(){
     const colors = PXGrid.existingColors(board);
     const color = colors.length
@@ -193,7 +223,6 @@
     return { color: avatar.color, avatarId: avatar.id };
   }
 
-  // ====== 初期化 ======
   async function init(){
     await loadAvatars();
     await loadLevel();
@@ -212,56 +241,50 @@
     loop(0);
   }
 
-  // ====== 入力（PCマウス） ======
-  function wireMouse(){
-    cv.addEventListener("mousemove", e=>{
-      if (touchAiming) return;
-      const {x,y} = clientToCanvas(e.clientX, e.clientY);
-      aim.x = clampAimX(x);
-      aim.y = Math.min(y, shooter.y - 12);
-    });
-    cv.addEventListener("click", ()=>{ if (state === "ready") fire(); });
-  }
+  cv.addEventListener("mousemove", e=>{
+    if (touchAiming) return;
+    const {x,y} = clientToCanvas(e.clientX, e.clientY);
+    aim.x = clampAimX(x);
+    aim.y = Math.min(y, shooter.y - 12);
+  });
+  cv.addEventListener("click", ()=>{ if (state === "ready") fire(); });
 
-  // ====== 入力（モバイル） ======
-  function wireTouch(){
-    cv.addEventListener("touchstart", (e)=>{
-      if (e.changedTouches.length === 0) return;
-      const t = e.changedTouches[0];
-      const {x} = clientToCanvas(t.clientX, t.clientY);
-      touchAiming = true;
-      activeTouchId = t.identifier;
-      aim.x = clampAimX(x);
-      aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
-      e.preventDefault();
-    }, {passive:false});
-    cv.addEventListener("touchmove", (e)=>{
-      if (!touchAiming) return;
-      const t = findTouch(e.changedTouches, activeTouchId);
-      if (!t) return;
-      const {x} = clientToCanvas(t.clientX, t.clientY);
-      aim.x = clampAimX(x);
-      aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
-      e.preventDefault();
-    }, {passive:false});
-    cv.addEventListener("touchend", (e)=>{
-      if (!touchAiming) return;
-      const t = findTouch(e.changedTouches, activeTouchId);
-      if (!t) return;
-      touchAiming = false;
-      activeTouchId = null;
-      if (state === "ready") fire();
-      e.preventDefault();
-    }, {passive:false});
-    cv.addEventListener("touchcancel", (e)=>{
-      if (!touchAiming) return;
-      const t = findTouch(e.changedTouches, activeTouchId);
-      if (!t) return;
-      touchAiming = false;
-      activeTouchId = null;
-      e.preventDefault();
-    }, {passive:false});
-  }
+  cv.addEventListener("touchstart", (e)=>{
+    if (e.changedTouches.length === 0) return;
+    const t = e.changedTouches[0];
+    const {x} = clientToCanvas(t.clientX, t.clientY);
+    touchAiming = true;
+    activeTouchId = t.identifier;
+    aim.x = clampAimX(x);
+    aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
+    e.preventDefault();
+  }, {passive:false});
+  cv.addEventListener("touchmove", (e)=>{
+    if (!touchAiming) return;
+    const t = findTouch(e.changedTouches, activeTouchId);
+    if (!t) return;
+    const {x} = clientToCanvas(t.clientX, t.clientY);
+    aim.x = clampAimX(x);
+    aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
+    e.preventDefault();
+  }, {passive:false});
+  cv.addEventListener("touchend", (e)=>{
+    if (!touchAiming) return;
+    const t = findTouch(e.changedTouches, activeTouchId);
+    if (!t) return;
+    touchAiming = false;
+    activeTouchId = null;
+    if (state === "ready") fire();
+    e.preventDefault();
+  }, {passive:false});
+  cv.addEventListener("touchcancel", (e)=>{
+    if (!touchAiming) return;
+    const t = findTouch(e.changedTouches, activeTouchId);
+    if (!t) return;
+    touchAiming = false;
+    activeTouchId = null;
+    e.preventDefault();
+  }, {passive:false});
 
   function findTouch(touchList, id){
     for (let i=0;i<touchList.length;i++){
@@ -270,7 +293,6 @@
     return null;
   }
 
-  // ====== ユーティリティ ======
   function clientToCanvas(clientX, clientY){
     const rect = cv.getBoundingClientRect();
     const scaleX = cv.width / rect.width;
@@ -294,12 +316,11 @@
     return { vx, vy };
   }
 
-  // ====== 発射 ======
   function fire(){
     if (state !== "ready" || !nextBall) return;
     let dx = aim.x - shooter.x;
     let dy = aim.y - shooter.y;
-    if (dy >= -4) dy = -4; // 上方向限定
+    if (dy >= -4) dy = -4;
     const len = Math.hypot(dx,dy) || 1;
     let vx = (dx/len) * CONFIG.SHOT_SPEED;
     let vy = (dy/len) * CONFIG.SHOT_SPEED;
@@ -312,14 +333,13 @@
     state = "firing";
 
     if (audioUnlocked) {
-      playShotSfx();                  // 共通発射音
-      playFireVoice(nextBall.avatarId); // 個別ボイス
+      playShotSfx();
+      playFireVoice(nextBall.avatarId);
     }
 
     nextBall = makeNextBall();
   }
 
-  // ====== 配置・消去 ======
   function placeAt(row,col,ball){
     if (!PXGrid.inBounds(board,row,col)) return false;
     if (row >= board.length) return false;
@@ -327,31 +347,107 @@
     return true;
   }
 
+  // ====== 修正箇所: gareso の隣接消去を追加 ======
   function handleMatchesAndFalls(sr, sc){
     const cluster = PXGrid.findCluster(board, sr, sc);
     if (cluster.length >= CONFIG.CLEAR_MATCH){
+      // 隣接探索
+      function neighborsRC(rr, cc){
+        const odd = (rr & 1) === 1;
+        const cand = [
+          {r: rr,   c: cc-1}, {r: rr,   c: cc+1},
+          {r: rr-1, c: cc + (odd ? 0 : -1)}, {r: rr-1, c: cc + (odd ? 1 : 0)},
+          {r: rr+1, c: cc + (odd ? 0 : -1)}, {r: rr+1, c: cc + (odd ? 1 : 0)},
+        ];
+        return cand.filter(p => PXGrid.inBounds(board, p.r, p.c));
+      }
+
+      const hasGaresoInCluster = cluster.some(({r,c}) => {
+        const cell = board[r]?.[c];
+        return cell && cell.avatarId === "gareso";
+      });
+
+      const extraFromCluster = new Set();
+      if (hasGaresoInCluster){
+        const clusterSet = new Set(cluster.map(({r,c})=>`${r},${c}`));
+        for (const {r,c} of cluster){
+          const cell = board[r]?.[c];
+          if (!cell || cell.avatarId !== "gareso") continue;
+          for (const nb of neighborsRC(r,c)){
+            const k = `${nb.r},${nb.c}`;
+            if (clusterSet.has(k)) continue;
+            const ncell = board[nb.r][nb.c];
+            if (!ncell) continue;
+            extraFromCluster.add(k);
+          }
+        }
+      }
+
+      // クラスタ本体消去
       for (const {r,c} of cluster){
         if (board[r][c]){
           if (audioUnlocked) playClearVoice(board[r][c].avatarId);
           board[r][c] = null;
         }
       }
+      // gareso 隣接消去
+      if (hasGaresoInCluster){
+        for (const key of extraFromCluster){
+          const [rr, cc] = key.split(',').map(Number);
+          const cell = board[rr]?.[cc];
+          if (!cell) continue;
+          if (audioUnlocked) playClearVoice(cell.avatarId);
+          board[rr][cc] = null;
+        }
+      }
+
+      // 孤立塊の落下処理
       const connected = PXGrid.findCeilingConnected(board);
+      const toDrop = [];
+      const toDropSet = new Set();
       for (let r = 0; r < board.length; r++){
         for (let c = 0; c < CONFIG.COLS; c++){
           const cell = board[r][c];
           if (!cell) continue;
           const key = `${r},${c}`;
           if (!connected.has(key)){
-            if (audioUnlocked) playClearVoice(cell.avatarId);
-            board[r][c] = null;
+            toDrop.push({r,c});
+            toDropSet.add(key);
           }
+        }
+      }
+      const extraFromFalls = new Set();
+      if (toDrop.length){
+        for (const {r,c} of toDrop){
+          const cell = board[r]?.[c];
+          if (!cell || cell.avatarId !== "gareso") continue;
+          for (const nb of neighborsRC(r,c)){
+            const k = `${nb.r},${nb.c}`;
+            if (toDropSet.has(k)) continue;
+            const ncell = board[nb.r][nb.c];
+            if (!ncell) continue;
+            extraFromFalls.add(k);
+          }
+        }
+      }
+      for (const {r,c} of toDrop){
+        const cell = board[r][c];
+        if (!cell) continue;
+        if (audioUnlocked) playClearVoice(cell.avatarId);
+        board[r][c] = null;
+      }
+      if (extraFromFalls.size){
+        for (const key of extraFromFalls){
+          const [rr, cc] = key.split(',').map(Number);
+          const cell = board[rr]?.[cc];
+          if (!cell) continue;
+          if (audioUnlocked) playClearVoice(cell.avatarId);
+          board[rr][cc] = null;
         }
       }
     }
   }
 
-  // ====== 判定 ======
   function isCleared(){
     for (let r = 0; r < board.length; r++){
       for (let c = 0; c < CONFIG.COLS; c++){
@@ -378,42 +474,37 @@
     }
   }
 
-  // ====== UIボタン ======
-  function wireUI(){
-    if (btnPause){
-      btnPause.addEventListener("click", ()=>{
-        if (state === "paused") return;
-        state = "paused";
-        if (audioUnlocked) stopBGM();
-        showOverlay("PAUSED");
-      });
-    }
-    if (btnRetry){ btnRetry.addEventListener("click", ()=> reset()); }
-    if (btnResume){
-      btnResume.addEventListener("click", ()=>{
-        if (state !== "paused") return;
-        hideOverlay();
-        state = "ready";
-        if (audioUnlocked) playBGM();
-      });
-    }
-    if (btnOverlayRetry){ btnOverlayRetry.addEventListener("click", ()=> reset()); }
+  if (btnPause){
+    btnPause.addEventListener("click", ()=>{
+      if (state === "paused") return;
+      state = "paused";
+      if (audioUnlocked) stopBGM();
+      showOverlay("PAUSED");
+    });
   }
+  if (btnRetry){ btnRetry.addEventListener("click", ()=> reset()); }
+  if (btnResume){
+    btnResume.addEventListener("click", ()=>{
+      if (state !== "paused") return;
+      hideOverlay();
+      state = "ready";
+      if (audioUnlocked) playBGM();
+    });
+  }
+  if (btnOverlayRetry){ btnOverlayRetry.addEventListener("click", ()=> reset()); }
 
-  // ====== START クリックでオーディオ解禁＆ゲーム開始 ======
-  async function onStartClick(){
+  btnStart.addEventListener("click", async ()=>{
     if (!audioUnlocked) {
       audioUnlocked = true;
       ensureAudioGraph();
       try { await audioCtx.resume(); } catch {}
-      setBgmVolumeNorm(bgmVolume); // UI値をGainに反映
-      try { bgmEl && bgmEl.play().catch(()=>{}); } catch {}
+      setBgmVolumeNorm(bgmVolume);
+      playBGM();
     }
-    startOverlay && startOverlay.classList.add("hidden");
+    startOverlay.classList.add("hidden");
     if (!board) await init(); else await reset();
-  }
+  });
 
-  // ====== reset/init 共通 ======
   async function reset(){
     await loadLevel();
     dropOffsetY = 0;
@@ -425,11 +516,7 @@
       shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
     }
     hideOverlay();
-    if (audioUnlocked) {
-      ensureAudioGraph();
-      try { await audioCtx.resume(); } catch {}
-      try { bgmEl && bgmEl.play().catch(()=>{}); } catch {}
-    }
+    if (audioUnlocked) playBGM();
   }
   function showOverlay(text){
     if (!overlay) return;
@@ -446,7 +533,6 @@
   }
   function hideOverlay(){ if (overlay) overlay.classList.add("hidden"); }
 
-  // ====== メインループ ======
   let last = 0;
   function loop(ts){
     const dt = (ts - last) / 1000 || 0;
@@ -505,11 +591,11 @@
     if (state !== "paused" && state !== "over" && state !== "clear"){
       if (isGameOver()){
         state = "over";
-        if (audioUnlocked) { try { bgmEl && bgmEl.pause(); } catch {} }
+        if (audioUnlocked) stopBGM();
         showOverlay("GAME OVER");
       } else if (isCleared()){
         state = "clear";
-        if (audioUnlocked) { try { bgmEl && bgmEl.pause(); } catch {} }
+        if (audioUnlocked) stopBGM();
         showOverlay("GAME CLEAR!");
       }
     }
@@ -550,50 +636,15 @@
     requestAnimationFrame(loop);
   }
 
-  // ====== DOM 準備後に一度だけ要素取得＆イベント登録 ======
-  document.addEventListener('DOMContentLoaded', () => {
-    // 既存のHTML要素を必ず使う（動的生成しない）
-    cv = document.getElementById("game");
-    ctx = cv.getContext("2d");
-    cvNext = document.getElementById("next");
-    shotsLeftEl = document.getElementById("shotsLeft");
-    overlay = document.getElementById("overlay");
-    overlayText = document.getElementById("overlayText");
-    btnPause = document.getElementById("btnPause");
-    btnRetry = document.getElementById("btnRetry");
-    btnResume = document.getElementById("btnResume");
-    btnOverlayRetry = document.getElementById("btnOverlayRetry");
-    startOverlay = document.getElementById("startOverlay");
-    btnStart = document.getElementById("btnStart");
-    volSlider = document.getElementById("bgmVol");
-    volVal    = document.getElementById("bgmVolVal");
-
-    // BGM UI 初期反映
-    if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
-    if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
-    if (volSlider) {
-      volSlider.addEventListener("input", ()=>{
-        const v = Number(volSlider.value) / 100;
-        setBgmVolumeNorm(v);
-      });
+  btnStart.addEventListener("click", async ()=>{
+    if (!audioUnlocked) {
+      audioUnlocked = true;
+      ensureAudioGraph();
+      try { await audioCtx.resume(); } catch {}
+      setBgmVolumeNorm(bgmVolume);
+      playBGM();
     }
-
-    // 入力/UI
-    wireMouse();
-    wireTouch();
-    wireUI();
-
-    // START クリック
-    if (btnStart) {
-      btnStart.addEventListener("click", onStartClick);
-    } else {
-      // フォールバック：画面全体クリックで開始（万一ボタンが無い場合）
-      document.addEventListener("click", (e)=>{
-        if (state === "ready" && !board) onStartClick();
-      }, { once: true });
-    }
-
-    // 自動起動しない（START待ち）
-    // init();
+    startOverlay.classList.add("hidden");
+    if (!board) await init(); else await reset();
   });
 })();
