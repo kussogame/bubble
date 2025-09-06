@@ -84,6 +84,12 @@
   let bgmGain    = null;
   let bgmVolume  = loadSavedBgmVolume();
 
+  // === 追加: SE 用（Web Audio 統一再生） ===
+  let seGain = null;                       // SE全体のマスター音量
+  const seBuffers = new Map();             // key -> AudioBuffer
+  const SE_VOLUME = { shot: 0.5, hit: 0.6, fire: 0.7, clear: 0.8 };
+  let seLoaded = false;
+
   function ensureAudioGraph(){
     if (!audioCtx) {
       const AC = window.AudioContext || window.webkitAudioContext;
@@ -99,6 +105,12 @@
       bgmGain   = audioCtx.createGain();
       bgmGain.gain.value = bgmVolume;
       bgmSource.connect(bgmGain).connect(audioCtx.destination);
+    }
+    // 追加: SE用マスター
+    if (!seGain) {
+      seGain = audioCtx.createGain();
+      seGain.gain.value = 1.0;
+      seGain.connect(audioCtx.destination);
     }
   }
 
@@ -127,26 +139,50 @@
   }
   function stopBGM(){ if (bgmEl) bgmEl.pause(); }
 
-  function playShotSfx(){
-    const snd = new Audio("assets/sound/shot.mp3");
-    snd.volume = 0.5;
-    snd.play().catch(()=>{});
+  // === 追加: SE の事前読み込み（Web Audio） ===
+  async function loadSE() {
+    if (seLoaded) return;
+    const list = [
+      ["shot", "assets/sound/shot.mp3"],
+      ["hit",  "assets/sound/hit.mp3"],
+    ];
+    // アバターボイス（存在しない場合はスキップ）
+    for (const a of avatars) {
+      list.push([`fire_${a.id}`,  `assets/sound/fire_${a.id}.mp3`]);
+      list.push([`clear_${a.id}`, `assets/sound/clear_${a.id}.mp3`]);
+    }
+    const jobs = list.map(async ([key, url]) => {
+      try {
+        const res = await fetch(url, { cache: "force-cache" });
+        if (!res.ok) return;
+        const buf = await res.arrayBuffer();
+        const abuf = await audioCtx.decodeAudioData(buf);
+        seBuffers.set(key, abuf);
+      } catch {}
+    });
+    await Promise.allSettled(jobs);
+    seLoaded = true;
   }
-  function playHitSfx(){
-    const snd = new Audio("assets/sound/hit.mp3");
-    snd.volume = 0.6;
-    snd.play().catch(()=>{});
+
+  // === 追加: Web Audio 再生ユーティリティ ===
+  function playBuffer(name, vol = 1.0){
+    const buf = seBuffers.get(name);
+    if (!buf || !audioCtx || !seGain) return;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const g = audioCtx.createGain();
+    g.gain.value = vol;
+    src.connect(g).connect(seGain);
+    try { src.start(); } catch {}
   }
-  function playFireVoice(avatarId){
-    const snd = new Audio(`assets/sound/fire_${avatarId}.mp3`);
-    snd.volume = 0.7;
-    snd.play().catch(()=>{});
-  }
-  function playClearVoice(avatarId){
-    const snd = new Audio(`assets/sound/clear_${avatarId}.mp3`);
-    snd.volume = 0.8;
-    snd.play().catch(()=>{});
-  }
+
+  // SFX（共通） ※中身を Web Audio 版に置換
+  function playShotSfx(){  playBuffer("shot",  SE_VOLUME.shot  ?? 0.5); }
+  function playHitSfx(){   playBuffer("hit",   SE_VOLUME.hit   ?? 0.6); }
+
+  // 個別ボイス ※中身を Web Audio 版に置換
+  function playFireVoice(avatarId){  playBuffer(`fire_${avatarId}`,  SE_VOLUME.fire  ?? 0.7); }
+  function playClearVoice(avatarId){ playBuffer(`clear_${avatarId}`, SE_VOLUME.clear ?? 0.8); }
 
   // ====== 画像ローダー ======
   const BLOB_URLS = [];
@@ -225,6 +261,9 @@
 
   async function init(){
     await loadAvatars();
+    // SE は START で AudioContext を解禁済みなので、ここで事前デコード
+    ensureAudioGraph();
+    try { await loadSE(); } catch {}
     await loadLevel();
     shooter = { x: cv.width/2, y: cv.height - CONFIG.BOTTOM_MARGIN };
     aim.x = shooter.x;
@@ -499,6 +538,8 @@
       ensureAudioGraph();
       try { await audioCtx.resume(); } catch {}
       setBgmVolumeNorm(bgmVolume);
+      // 追加：SEを事前デコード
+      try { await loadSE(); } catch {}
       playBGM();
     }
     startOverlay.classList.add("hidden");
@@ -642,6 +683,7 @@
       ensureAudioGraph();
       try { await audioCtx.resume(); } catch {}
       setBgmVolumeNorm(bgmVolume);
+      try { await loadSE(); } catch {}
       playBGM();
     }
     startOverlay.classList.add("hidden");
