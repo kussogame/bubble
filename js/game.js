@@ -67,154 +67,77 @@
   let aim = {x: 0, y: 0};  // 照準点
   let moving = null;       // 発射中の玉 {x,y,vx,vy,r,color,avatarId}
   let nextBall = null;
-
-  // タッチ
-  let touchAiming = false;
-  let activeTouchId = null;
-
-  // ====== サウンド（BGMはWeb Audioで音量制御） ======
+  let audioCtx = null;
   let audioUnlocked = false;
 
-  // <audio> 実体（メディアソース）
-  let bgmEl = null;
+  // BGM
+  const bgmEl = document.getElementById("bgm");
+  let bgmSource = null;
+  let bgmGain = null;
+  let bgmVolume = loadSavedBgmVolume();
 
-  // Web Audio Graph
-  let audioCtx   = null;          // (webkit)AudioContext
-  let bgmSource  = null;          // MediaElementAudioSourceNode（1回だけ作成可能）
-  let bgmGain    = null;          // GainNode（音量）
-  let bgmVolume  = loadSavedBgmVolume(); // 0..1 保存値
+  // SE
+  const shotEl = document.getElementById("seShot");
+  const hitEl  = document.getElementById("seHit");
+  const voiceEls = {}; // id -> [HTMLAudioElement, ...]
+
+  function setAudioUnlocked(){
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    ensureAudioGraph();
+  }
 
   function ensureAudioGraph(){
-    if (!audioCtx) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      audioCtx = new AC();
+    if (!audioCtx){
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
-    if (!bgmEl) {
-      bgmEl = new Audio("assets/sound/bgm.mp3");
-      bgmEl.loop = true;
-      // iOSでは <audio>.volume は効かないが、他ブラウザでは一応保険で反映
-      bgmEl.volume = bgmVolume;
-    }
-    if (!bgmSource) {
-      // MediaElementSource は 1 つの <audio> につき 1 回だけ
-      bgmSource = audioCtx.createMediaElementSource(bgmEl);
-      bgmGain   = audioCtx.createGain();
-      bgmGain.gain.value = bgmVolume;
-      bgmSource.connect(bgmGain).connect(audioCtx.destination);
-    }
-  }
-
-  function setBgmVolumeNorm(v){ // 0..1
-    bgmVolume = Math.max(0, Math.min(1, v));
-    localStorage.setItem("px_bgm_vol", String(bgmVolume));
-    if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
-    if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
-    // 反映先：Web Audio（優先）/ <audio>.volume（保険）
-    if (bgmGain) bgmGain.gain.value = bgmVolume;
-    if (bgmEl)   bgmEl.volume = bgmVolume;
-  }
-
-  // UI初期値反映
-  if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
-  if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
-  if (volSlider) {
-    volSlider.addEventListener("input", ()=>{
-      const v = Number(volSlider.value) / 100;
-      setBgmVolumeNorm(v);
-    });
-  }
-
-  async function playBGM(){
-    ensureAudioGraph();
-    try { await audioCtx.resume(); } catch {}
-    bgmEl.play().catch(()=>{ /* ユーザー操作前は失敗する */ });
-  }
-  function stopBGM(){ if (bgmEl) bgmEl.pause(); }
-
-  // SFX（共通）
-  function playShotSfx(){
-    const snd = new Audio("assets/sound/shot.mp3");
-    snd.volume = 0.5;
-    snd.play().catch(()=>{});
-  }
-  function playHitSfx(){
-    const snd = new Audio("assets/sound/hit.mp3");
-    snd.volume = 0.6;
-    snd.play().catch(()=>{});
-  }
-
-  // 個別ボイス
-  function playFireVoice(avatarId){
-    const snd = new Audio(`assets/sound/fire_${avatarId}.mp3`);
-    snd.volume = 0.7;
-    snd.play().catch(()=>{});
-  }
-  function playClearVoice(avatarId){
-    const snd = new Audio(`assets/sound/clear_${avatarId}.mp3`);
-    snd.volume = 0.8;
-    snd.play().catch(()=>{});
-  }
-
-  // ====== 画像ローダー ======
-  const BLOB_URLS = [];
-  window.addEventListener("unload", () => { BLOB_URLS.forEach(u => URL.revokeObjectURL(u)); });
-
-  function guessMimeFromName(name){
-    const mDot = name.match(/\.([a-zA-Z0-9]+)(?:\?.*)?$/);
-    const mComma = name.match(/,([a-zA-Z0-9]+)$/);
-    const ext = (mDot && mDot[1]) || (mComma && mComma[1]) || "";
-    const lower = (ext || "").toLowerCase();
-    if (lower === "png")  return "image/png";
-    if (lower === "jpg" || lower === "jpeg") return "image/jpeg";
-    if (lower === "webp") return "image/webp";
-    if (lower === "gif")  return "image/gif";
-    return "";
-  }
-
-  function loadImageSmart(url){
-    return new Promise(async (resolve, reject) => {
-      const hasDotExt = /\.[a-zA-Z0-9]+(?:\?.*)?$/.test(url);
-      if (hasDotExt) {
-        const img = new Image();
-        img.src = url + (url.includes("?") ? "" : "?v=1");
-        img.onload = () => resolve(img);
-        img.onerror = (e) => reject(e);
-        return;
+    if (!bgmSource && bgmEl && audioCtx){
+      try { bgmSource = audioCtx.createMediaElementSource(bgmEl); } catch {}
+      if (bgmSource){
+        bgmGain = audioCtx.createGain();
+        bgmGain.gain.value = bgmVolume;
+        bgmSource.connect(bgmGain).connect(audioCtx.destination);
       }
-      try{
-        const res = await fetch(url, { cache: "reload" });
-        const buf = await res.arrayBuffer();
-        const mime = guessMimeFromName(url) || "image/png";
-        const blob = new Blob([buf], { type: mime });
-        const objUrl = URL.createObjectURL(blob);
-        BLOB_URLS.push(objUrl);
-        const img = new Image();
-        img.src = objUrl;
-        img.onload = () => resolve(img);
-        img.onerror = (e) => reject(e);
-      }catch(err){ reject(err); }
-    });
+    }
   }
 
-  // ====== データ読み込み ======
   async function loadAvatars(){
-    const resp = await fetch("data/avatars.json");
-    const data = await resp.json();
-    palette = data.palette;
-    avatars = data.avatars;
-    const jobs = avatars.map(a =>
-      loadImageSmart(a.file).then(img => { images[a.id] = img; })
-    );
-    await Promise.all(jobs);
+    const data = await (await fetch("./data/avatars.json")).json();
+    avatars = data;
+    const seen = new Set();
+    for (const a of avatars){
+      const key = a.color.toLowerCase();
+      if (!seen.has(key)){ seen.add(key); palette.push(a.color); }
+    }
+    for (const a of avatars){
+      const img = new Image();
+      img.src = a.img;
+      await img.decode().catch(()=>{});
+      images[a.id] = img;
+
+      if (Array.isArray(a.voice) && a.voice.length){
+        voiceEls[a.id] = [];
+        for (const v of a.voice){
+          const el = new Audio(v);
+          el.preload = "auto";
+          voiceEls[a.id].push(el);
+        }
+      }
+    }
   }
 
-  // ====== ランダム初期配置 ======
   async function loadLevel(){
     board = PXGrid.createBoard(CONFIG.BOARD_ROWS, CONFIG.COLS);
+    dropOffsetY = 0;
+
     for (let r = 0; r < CONFIG.INIT_ROWS; r++){
       for (let c = 0; c < CONFIG.COLS; c++){
         if (Math.random() < CONFIG.EMPTY_RATE) continue;
-        const avatar = avatars[Math.floor(Math.random() * avatars.length)];
+        const color = palette[Math.floor(Math.random() * palette.length)];
+        const pool = avatars.filter(a => a.color.toLowerCase() === color.toLowerCase());
+        const avatar = pool.length
+          ? pool[Math.floor(Math.random() * pool.length)]
+          : avatars[Math.floor(Math.random() * avatars.length)];
         board[r][c] = { color: avatar.color, avatarId: avatar.id };
       }
     }
@@ -245,111 +168,82 @@
     state = "ready";
     moving = null;
     nextBall = makeNextBall();
-    if (shotsLeftEl){
-      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
-    }
-    hideOverlay();
-    loop(0);
+
+    if (shotsLeftEl) shotsLeftEl.textContent = String(CONFIG.CEILING_DROP_PER_SHOTS);
+    draw();
   }
 
-  // ====== 入力（PCマウス） ======
-  cv.addEventListener("mousemove", e=>{
-    if (touchAiming) return;
-    const {x,y} = clientToCanvas(e.clientX, e.clientY);
-    aim.x = clampAimX(x);
-    aim.y = Math.min(y, shooter.y - 12);
-  });
-  cv.addEventListener("click", ()=>{ if (state === "ready") fire(); });
+  // ====== 入力 ======
+  const isMobile = /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent);
 
-  // ====== 入力（モバイル） ======
-  cv.addEventListener("touchstart", (e)=>{
-    if (e.changedTouches.length === 0) return;
-    const t = e.changedTouches[0];
-    const {x} = clientToCanvas(t.clientX, t.clientY);
-    touchAiming = true;
-    activeTouchId = t.identifier;
-    aim.x = clampAimX(x);
-    aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
-    e.preventDefault();
-  }, {passive:false});
-  cv.addEventListener("touchmove", (e)=>{
-    if (!touchAiming) return;
-    const t = findTouch(e.changedTouches, activeTouchId);
-    if (!t) return;
-    const {x} = clientToCanvas(t.clientX, t.clientY);
-    aim.x = clampAimX(x);
-    aim.y = shooter.y - CONFIG.AIM_Y_OFFSET_MOBILE;
-    e.preventDefault();
-  }, {passive:false});
-  cv.addEventListener("touchend", (e)=>{
-    if (!touchAiming) return;
-    const t = findTouch(e.changedTouches, activeTouchId);
-    if (!t) return;
-    touchAiming = false;
-    activeTouchId = null;
-    if (state === "ready") fire();
-    e.preventDefault();
-  }, {passive:false});
-  cv.addEventListener("touchcancel", (e)=>{
-    if (!touchAiming) return;
-    const t = findTouch(e.changedTouches, activeTouchId);
-    if (!t) return;
-    touchAiming = false;
-    activeTouchId = null;
-    e.preventDefault();
-  }, {passive:false});
-
-  function findTouch(touchList, id){
-    for (let i=0;i<touchList.length;i++){
-      if (touchList[i].identifier === id) return touchList[i];
+  function clampAngleDeg(a){
+    const min = CONFIG.MIN_AIM_ANGLE_DEG;
+    if (a > -min && a < min){
+      a = (a >= 0) ? min : -min;
     }
-    return null;
+    return a;
   }
 
-  // ====== ユーティリティ ======
-  function clientToCanvas(clientX, clientY){
+  function handlePointerMove(x, y){
+    if (isMobile) y = CONFIG.AIM_Y_OFFSET_MOBILE;
+    const dx = x - shooter.x;
+    const dy = y - shooter.y;
+    let ang = Math.atan2(dy, dx) * 180 / Math.PI;
+    ang = clampAngleDeg(ang);
+    const rad = ang * Math.PI / 180;
+    aim.x = shooter.x + Math.cos(rad) * 240;
+    aim.y = shooter.y + Math.sin(rad) * 240;
+  }
+
+  cv.addEventListener("mousemove", (e)=>{
     const rect = cv.getBoundingClientRect();
-    const scaleX = cv.width / rect.width;
-    const scaleY = cv.height / rect.height;
-    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+    handlePointerMove(e.clientX - rect.left, e.clientY - rect.top);
+  });
+  cv.addEventListener("touchmove", (e)=>{
+    const t = e.touches[0];
+    if (!t) return;
+    const rect = cv.getBoundingClientRect();
+    handlePointerMove(t.clientX - rect.left, t.clientY - rect.top);
+  }, {passive:true});
+
+  function playShotSfx(){
+    try { shotEl && shotEl.play().catch(()=>{}); } catch {}
   }
-  function clampAimX(x){
-    const minX = CONFIG.LEFT_MARGIN + CONFIG.R;
-    const maxX = cv.width - CONFIG.RIGHT_MARGIN - CONFIG.R;
-    return Math.min(maxX, Math.max(minX, x));
+  function playHitSfx(){
+    try { hitEl && hitEl.play().catch(()=>{}); } catch {}
   }
-  function applyMinAngle(vx, vy){
-    const angle = Math.atan2(-vy, vx);
-    const min = CONFIG.MIN_AIM_ANGLE_DEG * Math.PI / 180;
-    const sign = angle < 0 ? -1 : 1;
-    if (Math.abs(angle) < min){
-      const a = sign * min;
-      const speed = Math.hypot(vx, vy) || 1;
-      return { vx: Math.cos(a) * speed, vy: -Math.sin(a) * speed };
-    }
-    return { vx, vy };
+  function playClearVoice(id){
+    const list = voiceEls[id];
+    if (!list || !list.length) return;
+    const el = list[Math.floor(Math.random()*list.length)];
+    try { el.currentTime = 0; el.play().catch(()=>{}); } catch {}
+  }
+  function playFireVoice(id){
+    playClearVoice(id);
   }
 
-  // ====== 発射 ======
-  function fire(){
-    if (state !== "ready" || !nextBall) return;
-    let dx = aim.x - shooter.x;
-    let dy = aim.y - shooter.y;
-    if (dy >= -4) dy = -4; // 上方向限定
-    const len = Math.hypot(dx,dy) || 1;
-    let vx = (dx/len) * CONFIG.SHOT_SPEED;
-    let vy = (dy/len) * CONFIG.SHOT_SPEED;
-    ({vx, vy} = applyMinAngle(vx, vy));
+  function shoot(){
+    if (state !== "ready") return;
+    if (!nextBall) return;
+
+    const dx = aim.x - shooter.x;
+    const dy = aim.y - shooter.y;
+    const ang = Math.atan2(dy, dx);
+    const vx = Math.cos(ang) * CONFIG.SHOT_SPEED;
+    const vy = Math.sin(ang) * CONFIG.SHOT_SPEED;
+
     moving = {
-      x: shooter.x, y: shooter.y, r: CONFIG.R,
+      x: shooter.x, y: shooter.y,
       vx, vy,
-      color: nextBall.color, avatarId: nextBall.avatarId
+      r: CONFIG.R,
+      color: nextBall.color,
+      avatarId: nextBall.avatarId
     };
     state = "firing";
 
     if (audioUnlocked) {
-      playShotSfx();                  // 共通発射音
-      playFireVoice(nextBall.avatarId); // 個別ボイス
+      playShotSfx();
+      playFireVoice(nextBall.avatarId);
     }
 
     nextBall = makeNextBall();
@@ -366,22 +260,90 @@
   function handleMatchesAndFalls(sr, sc){
     const cluster = PXGrid.findCluster(board, sr, sc);
     if (cluster.length >= CONFIG.CLEAR_MATCH){
+      const hasGaresoInCluster = cluster.some(({r,c}) => {
+        const cell = board[r]?.[c];
+        return cell && cell.avatarId === "gareso";
+      });
+      const extraFromCluster = new Set();
+      function neighborsRC(rr, cc){
+        const odd = (rr & 1) === 1;
+        const cand = [
+          {r: rr,   c: cc-1}, {r: rr,   c: cc+1},
+          {r: rr-1, c: cc + (odd ? 0 : -1)}, {r: rr-1, c: cc + (odd ? 1 : 0)},
+          {r: rr+1, c: cc + (odd ? 0 : -1)}, {r: rr+1, c: cc + (odd ? 1 : 0)},
+        ];
+        return cand.filter(p => PXGrid.inBounds(board, p.r, p.c));
+      }
+      if (hasGaresoInCluster){
+        const clusterSet = new Set(cluster.map(({r,c})=>`${r},${c}`));
+        for (const {r,c} of cluster){
+          const cell = board[r]?.[c];
+          if (!cell || cell.avatarId !== "gareso") continue;
+          for (const nb of neighborsRC(r,c)){
+            const k = `${nb.r},${nb.c}`;
+            if (clusterSet.has(k)) continue;
+            const ncell = board[nb.r][nb.c];
+            if (!ncell) continue;
+            extraFromCluster.add(k);
+          }
+        }
+      }
       for (const {r,c} of cluster){
         if (board[r][c]){
           if (audioUnlocked) playClearVoice(board[r][c].avatarId);
           board[r][c] = null;
         }
       }
+      if (hasGaresoInCluster){
+        for (const key of extraFromCluster){
+          const [rr, cc] = key.split(',').map(Number);
+          const cell = board[rr]?.[cc];
+          if (!cell) continue;
+          if (audioUnlocked) playClearVoice(cell.avatarId);
+          board[rr][cc] = null;
+        }
+      }
       const connected = PXGrid.findCeilingConnected(board);
+      const toDrop = [];
+      const toDropSet = new Set();
       for (let r = 0; r < board.length; r++){
         for (let c = 0; c < CONFIG.COLS; c++){
           const cell = board[r][c];
           if (!cell) continue;
           const key = `${r},${c}`;
           if (!connected.has(key)){
-            if (audioUnlocked) playClearVoice(cell.avatarId);
-            board[r][c] = null;
+            toDrop.push({r,c});
+            toDropSet.add(key);
           }
+        }
+      }
+      const extraFromFalls = new Set();
+      if (toDrop.length){
+        for (const {r,c} of toDrop){
+          const cell = board[r]?.[c];
+          if (!cell || cell.avatarId !== "gareso") continue;
+          for (const nb of neighborsRC(r,c)){
+            const k = `${nb.r},${nb.c}`;
+            if (toDropSet.has(k)) continue;
+            const ncell = board[nb.r][nb.c];
+            if (!ncell) continue;
+            extraFromFalls.add(k);
+          }
+        }
+      }
+      for (const {r,c} of toDrop){
+        const cell = board[r][c];
+        if (!cell) continue;
+        if (audioUnlocked) playClearVoice(cell.avatarId);
+        board[r][c] = null;
+      }
+      if (extraFromFalls.size){
+        for (const key of extraFromFalls){
+          const [rr, cc] = key.split(',').map(Number);
+          const cell = board[rr]?.[cc];
+          if (!cell) continue;
+          if (audioUnlocked) playClearVoice(cell.avatarId);
+          board[rr][cc] = null;
         }
       }
     }
@@ -396,87 +358,25 @@
     }
     return true;
   }
-  function isGameOver(){
-    const bottomY = cv.height - CONFIG.BOTTOM_MARGIN;
-    for (let r = 0; r < board.length; r++){
-      for (let c = 0; c < CONFIG.COLS; c++){
-        const cell = board[r][c];
-        if (!cell) continue;
-        const {x,y} = PXGrid.cellCenter(r,c,dropOffsetY);
-        if (y + CONFIG.R >= bottomY) return true;
-      }
-    }
-    return false;
-  }
+
+  // ====== 天井降下 ======
   function dropCeilingIfNeeded(){
-    if (shotsUsed > 0 && shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS === 0){
+    const shotsPer = CONFIG.CEILING_DROP_PER_SHOTS;
+    const remain = shotsPer - (shotsUsed % shotsPer);
+    if (shotsLeftEl) shotsLeftEl.textContent = String(remain === shotsPer ? 0 : remain);
+
+    if (shotsUsed % shotsPer === 0){
       dropOffsetY += PXGrid.ROW_H;
-    }
-  }
-
-  // ====== UIボタン ======
-  if (btnPause){
-    btnPause.addEventListener("click", ()=>{
-      if (state === "paused") return;
-      state = "paused";
-      if (audioUnlocked) stopBGM();
-      showOverlay("PAUSED");
-    });
-  }
-  if (btnRetry){ btnRetry.addEventListener("click", ()=> reset()); }
-  if (btnResume){
-    btnResume.addEventListener("click", ()=>{
-      if (state !== "paused") return;
-      hideOverlay();
-      state = "ready";
-      if (audioUnlocked) playBGM();
-    });
-  }
-  if (btnOverlayRetry){ btnOverlayRetry.addEventListener("click", ()=> reset()); }
-
-  // ====== START クリックでオーディオ解禁＆ゲーム開始 ======
-  btnStart.addEventListener("click", async ()=>{
-    if (!audioUnlocked) {
-      audioUnlocked = true;
-      ensureAudioGraph();
-      try { await audioCtx.resume(); } catch {}
-      setBgmVolumeNorm(bgmVolume); // UI値をGainに反映
-      playBGM();                   // ユーザー操作の文脈で確実に再生
-    }
-    startOverlay.classList.add("hidden");
-    if (!board) await init(); else await reset();
-  });
-
-  // ====== reset/init 共通 ======
-  async function reset(){
-    await loadLevel();
-    dropOffsetY = 0;
-    shotsUsed = 0;
-    moving = null;
-    nextBall = makeNextBall();
-    state = "ready";
-    if (shotsLeftEl){
-      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
-    }
-    hideOverlay();
-    if (audioUnlocked) playBGM();
-  }
-  function showOverlay(text){
-    if (!overlay) return;
-    overlayText.textContent = text;
-    overlay.classList.remove("hidden");
-    const resumeBtn = document.getElementById("btnResume");
-    if (resumeBtn){
-      if (text === "GAME OVER" || text === "GAME CLEAR!"){
-        resumeBtn.style.display = "none";
-      } else {
-        resumeBtn.style.display = "";
+      const lastRowY = CONFIG.TOP_MARGIN + (board.length-1)*PXGrid.ROW_H + 24 + dropOffsetY;
+      if (lastRowY + CONFIG.R >= cv.height - CONFIG.BOTTOM_MARGIN){
+        state = "over";
+        overlay.classList.add("show");
+        overlayText.textContent = "GAME OVER";
       }
     }
   }
-  function hideOverlay(){ if (overlay) overlay.classList.add("hidden"); }
 
-  // ====== メインループ ======
+  // ====== ループ ======
   let last = 0;
   function loop(ts){
     const dt = (ts - last) / 1000 || 0;
@@ -510,78 +410,186 @@
           dropCeilingIfNeeded();
           state = "ready";
         } else {
-          moving.y += 1;
+          moving = null;
+          state = "ready";
         }
-      } else {
-        const col = PXPhys.checkCollision(moving, board, dropOffsetY, CONFIG.R);
-        if (col.hit){
-          const snap = PXPhys.chooseSnapCell(board, dropOffsetY, CONFIG.R, moving.x, moving.y, {r:col.r, c:col.c});
-          if (snap){
-            placeAt(snap.row, snap.col, moving);
-            if (audioUnlocked) playHitSfx();
-            handleMatchesAndFalls(snap.row, snap.col);
-            moving = null;
-            shotsUsed++;
-            dropCeilingIfNeeded();
-            state = "ready";
-          } else {
-            moving.x -= moving.vx * dt;
-            moving.y -= moving.vy * dt;
+        requestAnimationFrame(loop);
+        return;
+      }
+
+      const cells = PXGrid.nearbyCells(moving.x, moving.y, dropOffsetY);
+      for (const cell of cells){
+        if (!PXGrid.inBounds(board, cell.row, cell.col)) continue;
+        const existing = board[cell.row][cell.col];
+        if (!existing) continue;
+        const ctr = PXGrid.cellCenter(cell.row, cell.col, dropOffsetY);
+        const dx = moving.x - ctr.x, dy = moving.y - ctr.y;
+        const rr = CONFIG.R*2;
+        if (dx*dx + dy*dy <= rr*rr){
+          let best = null, bestD2 = 1e15;
+          for (const tgt of cells){
+            if (!PXGrid.inBounds(board, tgt.row, tgt.col)) continue;
+            if (board[tgt.row][tgt.col]) continue;
+            const ctr2 = PXGrid.cellCenter(tgt.row, tgt.col, dropOffsetY);
+            const d2 = (ctr2.x-moving.x)**2 + (ctr2.y-moving.y)**2;
+            if (d2 < bestD2){ bestD2 = d2; best = tgt; }
           }
+          if (best){
+            placeAt(best.row, best.col, moving);
+            if (audioUnlocked) playHitSfx();
+            handleMatchesAndFalls(best.row, best.col);
+          }
+          moving = null;
+          shotsUsed++;
+          dropCeilingIfNeeded();
+          state = "ready";
+          requestAnimationFrame(loop);
+          return;
         }
       }
     }
 
-    if (state !== "paused" && state !== "over" && state !== "clear"){
-      if (isGameOver()){
-        state = "over";
-        if (audioUnlocked) stopBGM();
-        showOverlay("GAME OVER");
-      } else if (isCleared()){
-        state = "clear";
-        if (audioUnlocked) stopBGM();
-        showOverlay("GAME CLEAR!");
-      }
-    }
-
-    if (shotsLeftEl){
-      shotsLeftEl.textContent = CONFIG.CEILING_DROP_PER_SHOTS - (shotsUsed % CONFIG.CEILING_DROP_PER_SHOTS);
-    }
-
-    ctx.clearRect(0,0,cv.width,cv.height);
-
-    ctx.strokeStyle = "rgba(255,255,255,.08)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(
-      CONFIG.LEFT_MARGIN,
-      CONFIG.TOP_MARGIN,
-      cv.width - CONFIG.LEFT_MARGIN - CONFIG.RIGHT_MARGIN,
-      cv.height - CONFIG.TOP_MARGIN - CONFIG.BOTTOM_MARGIN
-    );
-
-    PXRender.drawBoard(ctx, board, dropOffsetY, CONFIG.R, images);
-
-    if (state === "ready"){
-      PXRender.drawAimGuide(ctx, shooter.x, shooter.y, aim.x, aim.y);
-    }
-
-    if (moving){
-      const img = images[moving.avatarId];
-      PXRender.drawAvatarBubble(ctx, img, moving.x, moving.y, CONFIG.R, moving.color);
-    }
-
-    ctx.fillStyle = "#fff";
-    ctx.globalAlpha = .15;
-    ctx.beginPath(); ctx.arc(shooter.x, shooter.y, CONFIG.R*0.9, 0, Math.PI*2); ctx.fill();
-    ctx.globalAlpha = 1;
-
-    PXRender.drawNext(cvNext, nextBall, CONFIG.R, images);
-
+    draw();
     requestAnimationFrame(loop);
   }
 
-  // 自動起動しない（START待ち）
-  // init();
+  // ====== 描画 ======
+  function draw(){
+    ctx.clearRect(0,0,cv.width, cv.height);
+    ctx.fillStyle = "#0b0b0b";
+    ctx.fillRect(0,0,cv.width, cv.height);
+
+    for (let r = 0; r < board.length; r++){
+      for (let c = 0; c < CONFIG.COLS; c++){
+        const cell = board[r][c];
+        if (!cell) continue;
+        const ctr = PXGrid.cellCenter(r, c, dropOffsetY);
+        drawBall(ctr.x, ctr.y, cell.avatarId);
+      }
+    }
+
+    ctx.fillStyle = "#3dd5f3";
+    ctx.fillRect(cv.width/2 - 18, cv.height - CONFIG.BOTTOM_MARGIN, 36, 8);
+
+    ctx.strokeStyle = "#3dd5f3";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cv.width/2, cv.height - CONFIG.BOTTOM_MARGIN);
+    ctx.lineTo(aim.x, aim.y);
+    ctx.stroke();
+
+    if (nextBall){
+      drawBall(cv.width/2, cv.height - CONFIG.BOTTOM_MARGIN - 28, nextBall.avatarId);
+      const nctx = cvNext.getContext("2d");
+      nctx.clearRect(0,0,cvNext.width, cvNext.height);
+      drawBall(cvNext.width/2, cvNext.height/2, nextBall.avatarId, 48, nctx);
+    }
+
+    ctx.strokeStyle = "#30343a";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(CONFIG.LEFT_MARGIN, CONFIG.TOP_MARGIN + dropOffsetY);
+    ctx.lineTo(cv.width - CONFIG.RIGHT_MARGIN, CONFIG.TOP_MARGIN + dropOffsetY);
+    ctx.stroke();
+
+    if (state === "over"){
+      overlay.classList.add("show");
+      overlayText.textContent = "GAME OVER";
+    } else if (state === "clear"){
+      overlay.classList.add("show");
+      overlayText.textContent = "CLEAR!";
+    } else {
+      overlay.classList.remove("show");
+    }
+  }
+
+  function drawBall(x,y, avatarId, size=CONFIG.R*2, targetCtx=ctx){
+    targetCtx.save();
+    targetCtx.beginPath();
+    targetCtx.arc(x, y, CONFIG.R, 0, Math.PI*2);
+    targetCtx.closePath();
+    targetCtx.fillStyle = "#222";
+    targetCtx.fill();
+
+    const img = images[avatarId];
+    if (img){
+      const s = size;
+      targetCtx.save();
+      targetCtx.beginPath();
+      targetCtx.arc(x, y, CONFIG.R-1, 0, Math.PI*2);
+      targetCtx.clip();
+      targetCtx.drawImage(img, x - s/2, y - s/2, s, s);
+      targetCtx.restore();
+    }
+
+    targetCtx.strokeStyle = "#555";
+    targetCtx.lineWidth = 1.2;
+    targetCtx.beginPath();
+    targetCtx.arc(x, y, CONFIG.R, 0, Math.PI*2);
+    targetCtx.stroke();
+    targetCtx.restore();
+  }
+
+  // ====== ポーズ/再開/リトライ ======
+  btnPause && btnPause.addEventListener("click", ()=>{
+    if (state === "over") return;
+    state = "paused";
+    overlay.classList.add("show");
+    overlayText.textContent = "PAUSE";
+  });
+  btnResume && btnResume.addEventListener("click", ()=>{
+    state = "ready";
+    overlay.classList.remove("show");
+  });
+  btnRetry && btnRetry.addEventListener("click", async ()=>{
+    await reset();
+  });
+  btnOverlayRetry && btnOverlayRetry.addEventListener("click", async ()=>{
+    await reset();
+  });
+
+  async function reset(){
+    await loadLevel();
+    dropOffsetY = 0;
+    shotsUsed = 0;
+    state = "ready";
+    moving = null;
+    nextBall = makeNextBall();
+    if (shotsLeftEl) shotsLeftEl.textContent = String(CONFIG.CEILING_DROP_PER_SHOTS);
+  }
+
+  // ====== 入力（発射） ======
+  cv.addEventListener("mousedown", ()=>{ shoot(); });
+  cv.addEventListener("touchstart", ()=>{ shoot(); }, {passive:true});
+
+  // ====== START（オーディオ解禁） ======
+  function playBGM(){
+    if (!audioUnlocked || !bgmEl) return;
+    try {
+      bgmEl.volume = bgmVolume;
+      bgmEl.loop = true;
+      bgmEl.play().catch(()=>{});
+    } catch {}
+  }
+
+  if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
+  if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
+
+  function setBgmVolumeNorm(v){
+    bgmVolume = Math.max(0, Math.min(1, v));
+    localStorage.setItem("px_bgm_vol", String(bgmVolume));
+    if (volSlider) volSlider.value = String(Math.round(bgmVolume * 100));
+    if (volVal)    volVal.textContent = `${Math.round(bgmVolume * 100)}%`;
+    if (bgmGain) bgmGain.gain.value = bgmVolume;
+    if (bgmEl)   bgmEl.volume = bgmVolume;
+  }
+
+  if (volSlider) {
+    volSlider.addEventListener("input", ()=>{
+      const v = Number(volSlider.value) / 100;
+      setBgmVolumeNorm(v);
+    });
+  }
 
   // STARTが押されるまで待つ
   btnStart.addEventListener("click", async ()=>{
@@ -589,10 +597,13 @@
       audioUnlocked = true;
       ensureAudioGraph();
       try { await audioCtx.resume(); } catch {}
-      setBgmVolumeNorm(bgmVolume); // UI値をGainに反映
-      playBGM();                   // ユーザー操作の文脈で確実に再生
+      setBgmVolumeNorm(bgmVolume);
+      playBGM();
     }
     startOverlay.classList.add("hidden");
     if (!board) await init(); else await reset();
   });
+
+  // ====== ループ開始 ======
+  requestAnimationFrame(loop);
 })();
