@@ -84,11 +84,14 @@
   let bgmGain    = null;
   let bgmVolume  = loadSavedBgmVolume();
 
-  // === 追加: SE 用（Web Audio 統一再生） ===
+  // === SE 用（Web Audio 統一再生） ===
   let seGain = null;                       // SE全体のマスター音量
   const seBuffers = new Map();             // key -> AudioBuffer
   const SE_VOLUME = { shot: 0.5, hit: 0.6, fire: 0.7, clear: 0.8 };
   let seLoaded = false;
+
+  // === 追加: 自動正規化用のゲインテーブル ===
+  const seNormGains = new Map();           // key -> number（正規化係数）
 
   function ensureAudioGraph(){
     if (!audioCtx) {
@@ -106,7 +109,7 @@
       bgmGain.gain.value = bgmVolume;
       bgmSource.connect(bgmGain).connect(audioCtx.destination);
     }
-    // 追加: SE用マスター
+    // SE用マスター
     if (!seGain) {
       seGain = audioCtx.createGain();
       seGain.gain.value = 1.0;
@@ -139,7 +142,26 @@
   }
   function stopBGM(){ if (bgmEl) bgmEl.pause(); }
 
-  // === 追加: SE の事前読み込み（Web Audio） ===
+  // === 自動正規化: ピークをそろえる係数を計算 ===
+  function computeNormalizeGain(buffer){
+    // 全チャンネル・全サンプルの絶対値の最大を求める
+    let peak = 0;
+    const ch = buffer.numberOfChannels;
+    for (let c = 0; c < ch; c++){
+      const data = buffer.getChannelData(c);
+      for (let i = 0; i < data.length; i++){
+        const v = Math.abs(data[i]);
+        if (v > peak) peak = v;
+      }
+    }
+    if (!Number.isFinite(peak) || peak <= 1e-6) return 1.0; // 無音や異常は等倍
+    const TARGET = 0.9; // 目標ピーク（クリップ防止のため1.0未満）
+    const g = TARGET / peak;
+    // 万一、極端に小さいファイルで爆音化しないように安全上限（任意）
+    return Math.min(g, 4.0);
+  }
+
+  // === SE の事前読み込み（Web Audio） + 正規化係数の算出 ===
   async function loadSE() {
     if (seLoaded) return;
     const list = [
@@ -158,29 +180,34 @@
         const buf = await res.arrayBuffer();
         const abuf = await audioCtx.decodeAudioData(buf);
         seBuffers.set(key, abuf);
+        // 正規化係数を保存
+        const ng = computeNormalizeGain(abuf);
+        seNormGains.set(key, ng);
       } catch {}
     });
     await Promise.allSettled(jobs);
     seLoaded = true;
   }
 
-  // === 追加: Web Audio 再生ユーティリティ ===
+  // === Web Audio 再生ユーティリティ（正規化対応） ===
   function playBuffer(name, vol = 1.0){
     const buf = seBuffers.get(name);
     if (!buf || !audioCtx || !seGain) return;
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
     const g = audioCtx.createGain();
-    g.gain.value = vol;
+    // 自動正規化係数（無ければ1.0）
+    const norm = seNormGains.get(name) ?? 1.0;
+    g.gain.value = vol * norm;
     src.connect(g).connect(seGain);
     try { src.start(); } catch {}
   }
 
-  // SFX（共通） ※中身を Web Audio 版に置換
+  // SFX（共通）
   function playShotSfx(){  playBuffer("shot",  SE_VOLUME.shot  ?? 0.5); }
   function playHitSfx(){   playBuffer("hit",   SE_VOLUME.hit   ?? 0.6); }
 
-  // 個別ボイス ※中身を Web Audio 版に置換
+  // 個別ボイス
   function playFireVoice(avatarId){  playBuffer(`fire_${avatarId}`,  SE_VOLUME.fire  ?? 0.7); }
   function playClearVoice(avatarId){ playBuffer(`clear_${avatarId}`, SE_VOLUME.clear ?? 0.8); }
 
@@ -191,7 +218,7 @@
   function guessMimeFromName(name){
     const mDot = name.match(/\.([a-zA-Z0-9]+)(?:\?.*)?$/);
     const mComma = name.match(/,([a-zA-Z0-9]+)$/);
-    const ext = (mDot && mDot[1]) || (mComma && mComma[1]) || "";
+    const ext = (mDot && mDot[1]) || (mComma && mDot && mComma[1]) || "";
     const lower = (ext || "").toLowerCase();
     if (lower === "png")  return "image/png";
     if (lower === "jpg" || lower === "jpeg") return "image/jpeg";
@@ -280,6 +307,7 @@
     loop(0);
   }
 
+  // ====== 入力 ======
   cv.addEventListener("mousemove", e=>{
     if (touchAiming) return;
     const {x,y} = clientToCanvas(e.clientX, e.clientY);
@@ -332,6 +360,7 @@
     return null;
   }
 
+  // ====== ユーティリティ ======
   function clientToCanvas(clientX, clientY){
     const rect = cv.getBoundingClientRect();
     const scaleX = cv.width / rect.width;
@@ -355,6 +384,7 @@
     return { vx, vy };
   }
 
+  // ====== 発射 ======
   function fire(){
     if (state !== "ready" || !nextBall) return;
     let dx = aim.x - shooter.x;
@@ -379,6 +409,7 @@
     nextBall = makeNextBall();
   }
 
+  // ====== 配置・消去 ======
   function placeAt(row,col,ball){
     if (!PXGrid.inBounds(board,row,col)) return false;
     if (row >= board.length) return false;
@@ -386,11 +417,10 @@
     return true;
   }
 
-  // ====== 修正箇所: gareso の隣接消去を追加 ======
+  // gareso の隣接消去ロジック込み
   function handleMatchesAndFalls(sr, sc){
     const cluster = PXGrid.findCluster(board, sr, sc);
     if (cluster.length >= CONFIG.CLEAR_MATCH){
-      // 隣接探索
       function neighborsRC(rr, cc){
         const odd = (rr & 1) === 1;
         const cand = [
@@ -422,14 +452,12 @@
         }
       }
 
-      // クラスタ本体消去
       for (const {r,c} of cluster){
         if (board[r][c]){
           if (audioUnlocked) playClearVoice(board[r][c].avatarId);
           board[r][c] = null;
         }
       }
-      // gareso 隣接消去
       if (hasGaresoInCluster){
         for (const key of extraFromCluster){
           const [rr, cc] = key.split(',').map(Number);
@@ -440,7 +468,6 @@
         }
       }
 
-      // 孤立塊の落下処理
       const connected = PXGrid.findCeilingConnected(board);
       const toDrop = [];
       const toDropSet = new Set();
@@ -487,6 +514,7 @@
     }
   }
 
+  // ====== 判定 ======
   function isCleared(){
     for (let r = 0; r < board.length; r++){
       for (let c = 0; c < CONFIG.COLS; c++){
@@ -513,6 +541,7 @@
     }
   }
 
+  // ====== UIボタン ======
   if (btnPause){
     btnPause.addEventListener("click", ()=>{
       if (state === "paused") return;
@@ -532,13 +561,14 @@
   }
   if (btnOverlayRetry){ btnOverlayRetry.addEventListener("click", ()=> reset()); }
 
+  // ====== START ======
   btnStart.addEventListener("click", async ()=>{
     if (!audioUnlocked) {
       audioUnlocked = true;
       ensureAudioGraph();
       try { await audioCtx.resume(); } catch {}
       setBgmVolumeNorm(bgmVolume);
-      // 追加：SEを事前デコード
+      // SEの事前デコード（正規化係数も算出）
       try { await loadSE(); } catch {}
       playBGM();
     }
@@ -546,6 +576,7 @@
     if (!board) await init(); else await reset();
   });
 
+  // ====== reset/init 共通 ======
   async function reset(){
     await loadLevel();
     dropOffsetY = 0;
@@ -574,6 +605,7 @@
   }
   function hideOverlay(){ if (overlay) overlay.classList.add("hidden"); }
 
+  // ====== メインループ ======
   let last = 0;
   function loop(ts){
     const dt = (ts - last) / 1000 || 0;
@@ -677,6 +709,7 @@
     requestAnimationFrame(loop);
   }
 
+  // 再掲（安全のため二重バインド防止は不要な設計）
   btnStart.addEventListener("click", async ()=>{
     if (!audioUnlocked) {
       audioUnlocked = true;
