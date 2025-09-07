@@ -43,3 +43,9 @@
   #btnRetry{ right: calc(env(safe-area-inset-right, 0px) + 6px); top: 6px; }
   #btnPause{ right: calc(env(safe-area-inset-right, 0px) + 6px + 64px); top: 6px; }
 }
+/* ===== BGM 音量バーの幅を 65% に制限 ===== */
+#bgmVol {
+  width: 65% !important;   /* 全体の65%に */
+  max-width: 200px;        /* 端末幅が広すぎる場合の保険（任意） */
+  min-width: 80px;         /* 狭すぎる場合の保険（任意） */
+}
