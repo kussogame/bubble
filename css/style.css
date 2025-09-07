@@ -8,27 +8,26 @@
 
 /* ---- Retry（右端に確実固定） ---- */
 #btnRetry{
-  position: absolute;                  /* 既に absolute/fixed でもOK */
+  position: absolute;
   top: 8px;
-  right: calc(env(safe-area-inset-right, 0px) + 8px); /* ノッチ保険 + 右マージン */
-  left: auto !important;               /* left 指定が残っていても無効化 */
-  transform: none !important;          /* translateX などのズレを無効化 */
-  box-sizing: border-box;              /* クリック領域の計算を安定させる */
-  max-width: calc(100% - 16px);        /* 万一の極端な縮小でもはみ出さない保険 */
+  right: calc(env(safe-area-inset-right, 0px) + 8px);
+  left: auto !important;
+  transform: none !important;
+  box-sizing: border-box;
+  max-width: calc(100% - 16px);
 }
 
-/* ---- Pause（Retryの左に並べる：幅に応じて 72px を微調整可） ---- */
+/* ---- Pause（Retryの左に並べる：幅に応じて数値を調整） ---- */
 #btnPause{
   position: absolute;
   top: 8px;
-  right: calc(env(safe-area-inset-right, 0px) + 8px + 72px);
+  right: calc(env(safe-area-inset-right, 0px) + 8px + 72px); /* Retryの分だけ左へ */
   left: auto !important;
   transform: none !important;
   box-sizing: border-box;
 }
 
-/* ---- BGM スライダーのパネルが右配置を圧迫している場合の保険（任意） ----
-   BGMパネルがある場合は左固定にして右を空ける。ID/クラス名が違う場合は調整してください。 */
+/* ---- BGMパネル ---- */
 #bgmPanel, .bgm-panel{
   position: absolute;
   top: 8px;
@@ -36,16 +35,28 @@
   right: auto !important;
   transform: none !important;
   box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
-/* 画面が極端に狭い場合は、左右の余白を少し詰める（任意） */
+/* ===== BGM 音量バーの幅を 65% に制限 ===== */
+#bgmVol {
+  width: 65% !important;    /* 全体幅の65% */
+  max-width: 200px;         /* 保険: 大画面で広すぎないように */
+  min-width: 80px;          /* 保険: 狭すぎる場合 */
+}
+
+/* ラベルの見た目をそろえる（任意） */
+#bgmVolVal {
+  white-space: nowrap;
+  font-size: 0.9em;
+  margin-left: 4px;
+}
+
+/* スマホ向け調整 */
 @media (max-width: 360px){
   #btnRetry{ right: calc(env(safe-area-inset-right, 0px) + 6px); top: 6px; }
   #btnPause{ right: calc(env(safe-area-inset-right, 0px) + 6px + 64px); top: 6px; }
-}
-/* ===== BGM 音量バーの幅を 65% に制限 ===== */
-#bgmVol {
-  width: 65% !important;   /* 全体の65%に */
-  max-width: 200px;        /* 端末幅が広すぎる場合の保険（任意） */
-  min-width: 80px;         /* 狭すぎる場合の保険（任意） */
+  #bgmVol { width: 60% !important; }
 }
