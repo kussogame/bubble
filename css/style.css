@@ -19,7 +19,7 @@ html,body{
 .btn{
   background:#1c1c1c; color:#fff; border:1px solid #333; padding:10px 14px; border-radius:12px; cursor:pointer;
   transition:transform .08s ease, background .2s ease, border-color .2s ease;
-  font-size:7px;
+  font-size:10px;
 }
 .btn:hover{ background:#222; border-color:#444; transform:translateY(-1px); }
 
@@ -61,7 +61,7 @@ canvas#game{
 }
 .hidden{ display:none; }
 .overlay-text{
-  font-size:40px; font-weight:800; text-align:center; text-shadow:0 6px 30px rgba(0,0,0,.6);
+  font-size25px; font-weight:800; text-align:center; text-shadow:0 6px 30px rgba(0,0,0,.6);
   padding:8px 16px; border-radius:14px;
 }
 .overlay-actions{ margin-top:16px; display:flex; gap:12px; justify-content:center; }
@@ -80,10 +80,11 @@ canvas#game{
 
 /* モバイル最適化 */
 @media (max-width: 640px){
-  .btn{ padding:12px 16px; font-size:7px; border-radius:14px; }
+  .btn{ padding:12px 16px; font-size:10px; border-radius:14px; }
   .hud{ inset:calc(env(safe-area-inset-top, 0px) + 8px) 8px auto 8px; }
   .nextDock{ right:8px; bottom:calc(env(safe-area-inset-bottom,0px) + 8px); width:112px; }
   #next{ width:88px; height:88px; }
   #bgmVol{ width:110px; }
 }
+
 
