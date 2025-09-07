@@ -1,88 +1,45 @@
-:root{
-  --bg:#0b0b0b; --panel:#121212; --fg:#fff; --muted:#c9c9c9; --accent:#ffd400;
-}
-*{ box-sizing:border-box; }
-html,body{
-  margin:0; padding:0; background:var(--bg); color:var(--fg);
-  font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans JP",sans-serif;
+/* ============================
+   Safe override for top-right buttons
+   右端はみ出し対策（ノッチ端末でもOK）
+   ============================ */
+
+/* ステージ基準で位置決め（画面全体基準になるのを防ぐ）*/
+.stage { position: relative; }
+
+/* ---- Retry（右端に確実固定） ---- */
+#btnRetry{
+  position: absolute;                  /* 既に absolute/fixed でもOK */
+  top: 8px;
+  right: calc(env(safe-area-inset-right, 0px) + 8px); /* ノッチ保険 + 右マージン */
+  left: auto !important;               /* left 指定が残っていても無効化 */
+  transform: none !important;          /* translateX などのズレを無効化 */
+  box-sizing: border-box;              /* クリック領域の計算を安定させる */
+  max-width: calc(100% - 16px);        /* 万一の極端な縮小でもはみ出さない保険 */
 }
 
-/* HUD */
-.hud{
-  position:fixed;
-  inset:calc(env(safe-area-inset-top, 0px) + 12px) 12px auto 12px;
-  display:flex; justify-content:space-between; align-items:center;
-  z-index:10; pointer-events:none;
-}
-.hud .left,.hud .right{ pointer-events:auto; display:flex; align-items:center; gap:10px; }
-.label{ color:var(--muted); margin-right:8px; }
-.btn{
-  background:#1c1c1c; color:#fff; border:1px solid #333; padding:10px 14px; border-radius:12px; cursor:pointer;
-  transition:transform .08s ease, background .2s ease, border-color .2s ease;
-  font-size:14px;
-}
-.btn:hover{ background:#222; border-color:#444; transform:translateY(-1px); }
-
-/* 背景1枚方式 */
-.stage{
-  min-height:100dvh; display:grid; place-items:center; padding:64px 16px 24px;
-  background-image: url("../assets/img/bg_beach.png");
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
+/* ---- Pause（Retryの左に並べる：幅に応じて 72px を微調整可） ---- */
+#btnPause{
+  position: absolute;
+  top: 8px;
+  right: calc(env(safe-area-inset-right, 0px) + 8px + 72px);
+  left: auto !important;
+  transform: none !important;
+  box-sizing: border-box;
 }
 
-/* Canvasは透過 */
-canvas#game{
-  width:min(92vw,480px); height:calc(min(92vw,480px) * 1.5);
-  background: transparent;
-  border:2px solid rgba(255,255,255,.18);
-  border-radius:16px;
-  box-shadow:0 10px 30px rgba(0,0,0,.45);
-  touch-action: none; -ms-touch-action: none;
+/* ---- BGM スライダーのパネルが右配置を圧迫している場合の保険（任意） ----
+   BGMパネルがある場合は左固定にして右を空ける。ID/クラス名が違う場合は調整してください。 */
+#bgmPanel, .bgm-panel{
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: auto !important;
+  transform: none !important;
+  box-sizing: border-box;
 }
 
-/* NEXTパネル */
-.nextDock{
-  position:fixed; right:16px; bottom:calc(env(safe-area-inset-bottom,0px) + 16px);
-  width:120px; text-align:center;
-  backdrop-filter: blur(6px);
-  background: rgba(20,20,20,.6);
-  border:1px solid rgba(255,255,255,.15);
-  border-radius:14px; padding:10px 8px; box-shadow:0 6px 24px rgba(0,0,0,.35);
-}
-.nextDock .title{ font-size:12px; color:#aaa; margin-bottom:6px; letter-spacing:1px; }
-#next{ width:96px; height:96px; display:block; margin:0 auto; }
-
-/* オーバーレイ（共通） */
-.overlay{
-  position:absolute; inset:0; display:grid; place-items:center; border-radius:16px;
-  background:linear-gradient(180deg, rgba(0,0,0,.35), rgba(0,0,0,.65));
-}
-.hidden{ display:none; }
-.overlay-text{
-  font-size:40px; font-weight:800; text-align:center; text-shadow:0 6px 30px rgba(0,0,0,.6);
-  padding:8px 16px; border-radius:14px;
-}
-.overlay-actions{ margin-top:16px; display:flex; gap:12px; justify-content:center; }
-.overlay .btn{ background:#1e1e1e; }
-.overlay .btn:hover{ background:#232323; }
-
-/* BGMボリュームUI */
-.vol{
-  display:flex; align-items:center; gap:6px;
-  background:rgba(0,0,0,.35); border:1px solid rgba(255,255,255,.15);
-  padding:6px 8px; border-radius:12px; backdrop-filter: blur(4px);
-}
-.volLabel{ font-size:12px; color:#ddd; }
-.volVal{ font-size:12px; color:#ccc; min-width:36px; text-align:right; }
-#bgmVol{ width:140px; }
-
-/* モバイル最適化 */
-@media (max-width: 640px){
-  .btn{ padding:12px 16px; font-size:15px; border-radius:14px; }
-  .hud{ inset:calc(env(safe-area-inset-top, 0px) + 8px) 8px auto 8px; }
-  .nextDock{ right:8px; bottom:calc(env(safe-area-inset-bottom,0px) + 8px); width:112px; }
-  #next{ width:88px; height:88px; }
-  #bgmVol{ width:110px; }
+/* 画面が極端に狭い場合は、左右の余白を少し詰める（任意） */
+@media (max-width: 360px){
+  #btnRetry{ right: calc(env(safe-area-inset-right, 0px) + 6px); top: 6px; }
+  #btnPause{ right: calc(env(safe-area-inset-right, 0px) + 6px + 64px); top: 6px; }
 }
