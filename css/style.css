@@ -80,9 +80,10 @@ canvas#game{
 
 /* モバイル最適化 */
 @media (max-width: 640px){
-  .btn{ padding:12px 16px; font-size:15px; border-radius:14px; }
+  .btn{ padding:12px 16px; font-size:7px; border-radius:14px; }
   .hud{ inset:calc(env(safe-area-inset-top, 0px) + 8px) 8px auto 8px; }
   .nextDock{ right:8px; bottom:calc(env(safe-area-inset-bottom,0px) + 8px); width:112px; }
   #next{ width:88px; height:88px; }
   #bgmVol{ width:110px; }
 }
+
