@@ -1,62 +1,53 @@
 /* ============================
-   Safe override for top-right buttons
-   右端はみ出し対策（ノッチ端末でもOK）
+   HUD 安全オーバーライド（レイアウトを壊さない）
    ============================ */
 
-/* ステージ基準で位置決め（画面全体基準になるのを防ぐ）*/
-.stage { position: relative; }
+/* ▼ ステージは触らない（position は元のまま）
+   .stage の position: relative; も不要・未指定に戻す */
 
-/* ---- Retry（右端に確実固定） ---- */
-#btnRetry{
-  position: absolute;
-  top: 8px;
-  right: calc(env(safe-area-inset-right, 0px) + 8px);
+/* --- Retry を右端へ。絶対配置でも通常フローでも効くように両対応 --- */
+#btnRetry {
+  right: calc(env(safe-area-inset-right, 0px) + 8px) !important; /* 絶対/固定配置のとき */
   left: auto !important;
   transform: none !important;
-  box-sizing: border-box;
-  max-width: calc(100% - 16px);
-}
-
-/* ---- Pause（Retryの左に並べる：幅に応じて数値を調整） ---- */
-#btnPause{
-  position: absolute;
-  top: 8px;
-  right: calc(env(safe-area-inset-right, 0px) + 8px + 72px); /* Retryの分だけ左へ */
-  left: auto !important;
-  transform: none !important;
+  margin-right: calc(env(safe-area-inset-right, 0px) + 8px) !important; /* 通常フローやflex時 */
   box-sizing: border-box;
 }
 
-/* ---- BGMパネル ---- */
-#bgmPanel, .bgm-panel{
-  position: absolute;
-  top: 8px;
-  left: 8px;
+/* --- Pause は Retry の左に寄せる（幅に応じて 64〜88px 程度で微調整可） --- */
+#btnPause {
+  right: auto !important;           /* 絶対配置だった場合の left/right の競合を避ける */
+  transform: none !important;
+  margin-right: 8px !important;     /* 通常フローやflex時 */
+}
+
+/* --- BGM パネルは一切位置変更しない（前回の absolute 指定を打ち消す） --- */
+#bgmPanel, .bgm-panel {
+  position: initial !important;     /* もともと static/relative なら初期化 */
+  left: auto !important;
   right: auto !important;
+  top: auto !important;
   transform: none !important;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  gap: 4px;
 }
 
-/* ===== BGM 音量バーの幅を 65% に制限 ===== */
+/* --- BGM スライダーの幅を 65% に縮める（見切れ対策の保険付き） --- */
 #bgmVol {
-  width: 65% !important;    /* 全体幅の65% */
-  max-width: 200px;         /* 保険: 大画面で広すぎないように */
-  min-width: 80px;          /* 保険: 狭すぎる場合 */
+  width: 65% !important;            /* 指定の65% */
+  max-width: 220px;                 /* 大画面で広がりすぎない保険（必要なら調整） */
+  min-width: 100px;                 /* 小画面で小さすぎない保険（必要なら調整） */
 }
 
-/* ラベルの見た目をそろえる（任意） */
+/* 値表示の見切れ防止（任意） */
 #bgmVolVal {
   white-space: nowrap;
-  font-size: 0.9em;
-  margin-left: 4px;
+  margin-left: 6px;
+  font-size: 0.95em;
 }
 
-/* スマホ向け調整 */
-@media (max-width: 360px){
-  #btnRetry{ right: calc(env(safe-area-inset-right, 0px) + 6px); top: 6px; }
-  #btnPause{ right: calc(env(safe-area-inset-right, 0px) + 6px + 64px); top: 6px; }
-  #bgmVol { width: 60% !important; }
+/* 右端の余白を少し詰めたい超狭幅端末用（任意） */
+@media (max-width: 360px) {
+  #btnRetry { 
+    right: calc(env(safe-area-inset-right, 0px) + 6px) !important;
+    margin-right: calc(env(safe-area-inset-right, 0px) + 6px) !important;
+  }
 }
