@@ -39,7 +39,7 @@
     startOverlay.id = "startOverlay";
     startOverlay.className = "overlay";
     startOverlay.innerHTML = `
-      <div class="overlay-text">自民党員を消すと<br>暴言を吐くゲーム<br><br>(音がでるよ)<br><br>ガレソを消すと<br>周りの党員が一気に消えるよ</div>
+      <div class="overlay-text">自民党員を消すと<br>たまに暴言を吐くゲーム<br><br>(音がでるよ)<br><br>同じ党員の玉をを<br>3個以上つなげると消えるよ<br><br>ガレソを消すと<br>周りの党員が一気に消えるよ</div>
       <div class="overlay-actions"><button id="btnStart" class="btn">START</button></div>`;
     const stage = document.querySelector(".stage") || document.body;
     stage.appendChild(startOverlay);
