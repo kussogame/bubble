@@ -90,7 +90,7 @@
   const SE_VOLUME = { shot: 0.5, hit: 0.6, fire: 0.7, clear: 0.8 };
   let seLoaded = false;
 
-  // === 自動正規化用のゲインテーブル ===
+  // === 追加: 自動正規化用のゲインテーブル ===
   const seNormGains = new Map();           // key -> number（正規化係数）
 
   function ensureAudioGraph(){
@@ -142,6 +142,75 @@
   }
   function stopBGM(){ if (bgmEl) bgmEl.pause(); }
 
+  // === 自動正規化: ピークをそろえる係数を計算 ===
+  function computeNormalizeGain(buffer){
+    // 全チャンネル・全サンプルの絶対値の最大を求める
+    let peak = 0;
+    const ch = buffer.numberOfChannels;
+    for (let c = 0; c < ch; c++){
+      const data = buffer.getChannelData(c);
+      for (let i = 0; i < data.length; i++){
+        const v = Math.abs(data[i]);
+        if (v > peak) peak = v;
+      }
+    }
+    if (!Number.isFinite(peak) || peak <= 1e-6) return 1.0; // 無音や異常は等倍
+    const TARGET = 0.9; // 目標ピーク（クリップ防止のため1.0未満）
+    const g = TARGET / peak;
+    // 万一、極端に小さいファイルで爆音化しないように安全上限（任意）
+    return Math.min(g, 4.0);
+  }
+
+  // === SE の事前読み込み（Web Audio） + 正規化係数の算出 ===
+  async function loadSE() {
+    if (seLoaded) return;
+    const list = [
+      ["shot", "assets/sound/shot.mp3"],
+      ["hit",  "assets/sound/hit.mp3"],
+    ];
+    // アバターボイス（存在しない場合はスキップ）
+    for (const a of avatars) {
+      list.push([`fire_${a.id}`,  `assets/sound/fire_${a.id}.mp3`]);
+      list.push([`clear_${a.id}`, `assets/sound/clear_${a.id}.mp3`]);
+    }
+    const jobs = list.map(async ([key, url]) => {
+      try {
+        const res = await fetch(url, { cache: "force-cache" });
+        if (!res.ok) return;
+        const buf = await res.arrayBuffer();
+        const abuf = await audioCtx.decodeAudioData(buf);
+        seBuffers.set(key, abuf);
+        // 正規化係数を保存
+        const ng = computeNormalizeGain(abuf);
+        seNormGains.set(key, ng);
+      } catch {}
+    });
+    await Promise.allSettled(jobs);
+    seLoaded = true;
+  }
+
+  // === Web Audio 再生ユーティリティ（正規化対応） ===
+  function playBuffer(name, vol = 1.0){
+    const buf = seBuffers.get(name);
+    if (!buf || !audioCtx || !seGain) return;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const g = audioCtx.createGain();
+    // 自動正規化係数（無ければ1.0）
+    const norm = seNormGains.get(name) ?? 1.0;
+    g.gain.value = vol * norm;
+    src.connect(g).connect(seGain);
+    try { src.start(); } catch {}
+  }
+
+  // SFX（共通）
+  function playShotSfx(){  playBuffer("shot",  SE_VOLUME.shot  ?? 0.5); }
+  function playHitSfx(){   playBuffer("hit",   SE_VOLUME.hit   ?? 0.6); }
+
+  // 個別ボイス
+  function playFireVoice(avatarId){  playBuffer(`fire_${avatarId}`,  SE_VOLUME.fire  ?? 0.7); }
+  function playClearVoice(avatarId){ playBuffer(`clear_${avatarId}`, SE_VOLUME.clear ?? 0.8); }
+
   // ====== 画像ローダー ======
   const BLOB_URLS = [];
   window.addEventListener("unload", () => { BLOB_URLS.forEach(u => URL.revokeObjectURL(u)); });
@@ -183,77 +252,6 @@
     });
   }
 
-  // === 正規化: ピーク検出 ===
-  function computeNormalizeGain(buffer){
-    // 全チャンネル・全サンプルの絶対値の最大を求める
-    let peak = 0;
-    const ch = buffer.numberOfChannels;
-    for (let c = 0; c < ch; c++){
-      const data = buffer.getChannelData(c);
-      for (let i = 0; i < data.length; i++){
-        const v = Math.abs(data[i]);
-        if (v > peak) peak = v;
-      }
-    }
-    if (!Number.isFinite(peak) || peak <= 1e-6) return 1.0; // 無音や異常は等倍
-    const TARGET = 0.9; // 目標ピーク（クリップ防止のため1.0未満）
-    const g = TARGET / peak;
-    return Math.min(g, 4.0);
-  }
-
-  // === SE の事前読み込み（Web Audio） + 正規化係数の算出 ===
-  async function loadSE() {
-    if (seLoaded) return;
-    const list = [
-      ["shot", "assets/sound/shot.mp3"],
-      ["hit",  "assets/sound/hit.mp3"],
-    ];
-    // アバターボイス（存在しない場合はスキップ）
-    for (const a of avatars) {
-      list.push([`fire_${a.id}`,  `assets/sound/fire_${a.id}.mp3`]);
-      list.push([`clear_${a.id}`, `assets/sound/clear_${a.id}.mp3`]);
-    }
-    const jobs = list.map(async ([key, url]) => {
-      try {
-        const res = await fetch(url, { cache: "force-cache" });
-        if (!res.ok) return;
-        const buf = await res.arrayBuffer();
-        const abuf = await audioCtx.decodeAudioData(buf);
-        seBuffers.set(key, abuf);
-        // 正規化係数を保存
-        const ng = computeNormalizeGain(abuf);
-        seNormGains.set(key, ng);
-      } catch {}
-    });
-    await Promise.allSettled(jobs);
-    seLoaded = true;
-  }
-
-  // === Web Audio 再生ユーティリティ（正規化対応 + ②resume保険） ===
-  function playBuffer(name, vol = 1.0){
-    if (!audioCtx || !seGain) return;
-    try { if (audioCtx.state !== "running") audioCtx.resume(); } catch {}
-    const buf = seBuffers.get(name);
-    if (!buf) return;
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf;
-    const g = audioCtx.createGain();
-    // 自動正規化係数（無ければ1.0）
-    const norm = seNormGains.get(name) ?? 1.0;
-    g.gain.value = vol * norm;
-    src.connect(g).connect(seGain);
-    try { src.start(); } catch {}
-  }
-
-  // SFX（共通）
-  function playShotSfx(){  playBuffer("shot",  SE_VOLUME.shot  ?? 0.5); }
-  function playHitSfx(){   playBuffer("hit",   SE_VOLUME.hit   ?? 0.6); }
-
-  // 個別ボイス
-  function playFireVoice(avatarId){  playBuffer(`fire_${avatarId}`,  SE_VOLUME.fire  ?? 0.7); }
-  function playClearVoice(avatarId){ playBuffer(`clear_${avatarId}`, SE_VOLUME.clear ?? 0.8); }
-
-  // ====== データ読み込み ======
   async function loadAvatars(){
     const resp = await fetch("data/avatars.json");
     const data = await resp.json();
@@ -265,7 +263,6 @@
     await Promise.all(jobs);
   }
 
-  // ====== ランダム初期配置 ======
   async function loadLevel(){
     board = PXGrid.createBoard(CONFIG.BOARD_ROWS, CONFIG.COLS);
     for (let r = 0; r < CONFIG.INIT_ROWS; r++){
@@ -277,7 +274,6 @@
     }
   }
 
-  // 次弾
   function makeNextBall(){
     const colors = PXGrid.existingColors(board);
     const color = colors.length
@@ -290,7 +286,6 @@
     return { color: avatar.color, avatarId: avatar.id };
   }
 
-  // ====== 初期化 ======
   async function init(){
     await loadAvatars();
     // SE は START で AudioContext を解禁済みなので、ここで事前デコード
@@ -312,7 +307,7 @@
     loop(0);
   }
 
-  // ====== 入力（PCマウス） ======
+  // ====== 入力 ======
   cv.addEventListener("mousemove", e=>{
     if (touchAiming) return;
     const {x,y} = clientToCanvas(e.clientX, e.clientY);
@@ -321,7 +316,6 @@
   });
   cv.addEventListener("click", ()=>{ if (state === "ready") fire(); });
 
-  // ====== 入力（モバイル） ======
   cv.addEventListener("touchstart", (e)=>{
     if (e.changedTouches.length === 0) return;
     const t = e.changedTouches[0];
@@ -395,7 +389,7 @@
     if (state !== "ready" || !nextBall) return;
     let dx = aim.x - shooter.x;
     let dy = aim.y - shooter.y;
-    if (dy >= -4) dy = -4; // 上方向限定
+    if (dy >= -4) dy = -4;
     const len = Math.hypot(dx,dy) || 1;
     let vx = (dx/len) * CONFIG.SHOT_SPEED;
     let vy = (dy/len) * CONFIG.SHOT_SPEED;
@@ -408,8 +402,8 @@
     state = "firing";
 
     if (audioUnlocked) {
-      playShotSfx();                  // 共通発射音
-      playFireVoice(nextBall.avatarId); // 個別ボイス
+      playShotSfx();
+      playFireVoice(nextBall.avatarId);
     }
 
     nextBall = makeNextBall();
@@ -574,7 +568,7 @@
       ensureAudioGraph();
       try { await audioCtx.resume(); } catch {}
       setBgmVolumeNorm(bgmVolume);
-      // SEの事前デコード（正規化係数も算出）—①順序固定
+      // SEの事前デコード（正規化係数も算出）
       try { await loadSE(); } catch {}
       playBGM();
     }
